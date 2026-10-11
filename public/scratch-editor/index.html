@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scratch Vibe Editor</title>
+  <style>
+    html, body, #scratch-root {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #ffffff;
+    }
+    #scratch-loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #155e75;
+      background: #ecfeff;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="scratch-loading">Đang tải Scratch editor...</div>
+  <div id="scratch-root"></div>
+  <script>
+  // Rewrite Scratch CDN asset URLs to same-origin proxy BEFORE scratch-gui-standalone.js loads,
+  // so scratch-storage captures the patched fetch.
+  (function () {
+    var PROXY = "/api/scratch-assets";
+    var ASSET_RE = /^\/internalapi\/asset\/[a-f0-9]{32}\.(?:svg|png|jpg|jpeg|gif|wav|mp3)\/get\/?$/i;
+
+    function rewrite(value) {
+      if (typeof value !== "string") return value;
+      var url;
+      try { url = new URL(value, location.href); } catch (e) { return value; }
+
+      if ((url.hostname === "assets.scratch.mit.edu" || url.hostname === "cdn.assets.scratch.mit.edu") && ASSET_RE.test(url.pathname)) {
+        return location.origin + PROXY + url.pathname.replace(/\/$/, "") + url.search;
+      }
+      if (url.origin === location.origin && url.pathname.startsWith(PROXY + "/") && url.pathname.endsWith("/") && ASSET_RE.test(url.pathname.slice(PROXY.length))) {
+        return location.origin + url.pathname.replace(/\/$/, "") + url.search;
+      }
+      return value;
+    }
+
+    var _fetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      if (typeof input === "string") return _fetch(rewrite(input), init);
+      if (typeof Request !== "undefined" && input instanceof Request) {
+        var u = rewrite(input.url);
+        if (u !== input.url) return _fetch(new Request(u, input), init);
+      }
+      return _fetch(input, init);
+    };
+
+    var desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+    if (desc && desc.set) {
+      Object.defineProperty(HTMLImageElement.prototype, "src", {
+        configurable: true, enumerable: desc.enumerable, get: desc.get,
+        set: function (v) { desc.set.call(this, rewrite(v)); }
+      });
+    }
+
+    var _setAttribute = Element.prototype.setAttribute;
+    Element.prototype.setAttribute = function (name, value) {
+      if (this instanceof HTMLImageElement && String(name).toLowerCase() === "src") {
+        _setAttribute.call(this, name, rewrite(value));
+        return;
+      }
+      _setAttribute.call(this, name, value);
+    };
+  })();
+  </script>
+  <script src="/scratch-editor/vendor/scratch-gui/scratch-gui-standalone.js"></script>
+  <iframe src="/scratch-tools.html" title="Scratch tool runtime" hidden aria-hidden="true"></iframe>
+  <script src="/scratch-editor/bridge.js"></script>
+</body>
+</html>
