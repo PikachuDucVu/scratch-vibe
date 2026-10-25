@@ -71,11 +71,11 @@ async function recordRun(vm: ScratchVm, a: RecordArgs) {
     for (const input of a.inputs ?? []) {
       timers.push(setTimeout(() => {
         if (input.device === "keyboard") {
-          const key = KEY_NAMES[input.key] ?? input.key;
+          const key = KEY_NAMES[input.key!] ?? input.key!; // Checked by parseTool (checkRecordInputs).
           vm.postIOData("keyboard", { key, isDown: true }); pressed.add(key);
           timers.push(setTimeout(() => { vm.postIOData("keyboard", { key, isDown: false }); pressed.delete(key); }, input.durationMs ?? 150));
         } else {
-          const mouse = mousePosition(vm, input.x, input.y);
+          const mouse = mousePosition(vm, input.x!, input.y!);
           vm.postIOData("mouse", { ...mouse, isDown: true });
           timers.push(setTimeout(() => vm.postIOData("mouse", { ...mouse, isDown: false }), input.durationMs ?? 100));
         }

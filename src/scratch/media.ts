@@ -1,5 +1,6 @@
 import { assertAssetsLoaded } from "./assets";
 import { findTarget, originals, refresh, vmBytes, type Asset, type Invocation, type ScratchVm, type VmTarget } from "./vm-types";
+import { clamp } from "../../shared/tools";
 
 const IMAGE_TYPES: Record<string, string> = { svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", bmp: "image/bmp" };
 const MAX_CANVAS = 2400; // Pixels per side; Scratch bitmaps are stored at 2x stage size.
@@ -76,21 +77,24 @@ type CostumeOp = Extract<Invocation, { name: "edit_costume" }>["args"]["operatio
 export function applyCostumeOps(src: Raster, operations: CostumeOp[]): Raster {
   let raster = src;
   for (const op of operations) {
+    // Required parameters were checked by parseTool (checkCostumeOps).
     if (op.type === "flip") raster = transformed(raster, op.axis === "horizontal" ? new DOMMatrix().scale(-1, 1) : new DOMMatrix().scale(1, -1));
-    else if (op.type === "rotate") raster = transformed(raster, new DOMMatrix().rotate(op.degrees));
-    else if (op.type === "scale") raster = transformed(raster, new DOMMatrix().scale(op.factor));
+    else if (op.type === "rotate") raster = transformed(raster, new DOMMatrix().rotate(op.degrees!));
+    else if (op.type === "scale") raster = transformed(raster, new DOMMatrix().scale(clamp(op.factor!, 0.1, 4)));
     else {
       const ctx = raster.canvas.getContext("2d")!, image = ctx.getImageData(0, 0, raster.canvas.width, raster.canvas.height), px = image.data;
-      const tint = op.type === "tint" ? [1, 3, 5].map(i => parseInt(op.color.slice(i, i + 2), 16)) : null;
+      const tint = op.type === "tint" ? [1, 3, 5].map(i => parseInt(op.color!.slice(i, i + 2), 16)) : null;
+      // Clamp to each operation's documented range.
+      const amount = clamp(op.amount ?? 0, op.type === "tint" || op.type === "opacity" ? 0 : -100, 100), degrees = op.degrees ?? 0;
       for (let i = 0; i < px.length; i += 4) {
-        if (op.type === "opacity") { px[i + 3] = px[i + 3] * op.amount / 100; continue; }
+        if (op.type === "opacity") { px[i + 3] = px[i + 3] * amount / 100; continue; }
         let [r, g, b] = [px[i], px[i + 1], px[i + 2]];
         if (op.type === "grayscale") r = g = b = 0.299 * r + 0.587 * g + 0.114 * b;
-        else if (op.type === "brightness") { const add = op.amount * 2.55; r += add; g += add; b += add; }
-        else if (op.type === "tint") { const t = op.amount / 100; r += (tint![0] - r) * t; g += (tint![1] - g) * t; b += (tint![2] - b) * t; }
+        else if (op.type === "brightness") { const add = amount * 2.55; r += add; g += add; b += add; }
+        else if (op.type === "tint") { const t = amount / 100; r += (tint![0] - r) * t; g += (tint![1] - g) * t; b += (tint![2] - b) * t; }
         else {
           const [h, s, l] = rgbToHsl(r, g, b);
-          [r, g, b] = op.type === "hue" ? hslToRgb(h + op.degrees / 360, s, l) : hslToRgb(h, Math.max(0, Math.min(1, s * (1 + op.amount / 100))), l);
+          [r, g, b] = op.type === "hue" ? hslToRgb(h + degrees / 360, s, l) : hslToRgb(h, Math.max(0, Math.min(1, s * (1 + amount / 100))), l);
         }
         px[i] = r; px[i + 1] = g; px[i + 2] = b; // Uint8ClampedArray clamps to 0..255.
       }
@@ -190,23 +194,24 @@ export function applySoundOps(input: Float32Array, rate: number, operations: Sou
   let s = input;
   const at = (ms: number) => Math.max(0, Math.min(s.length, Math.round(ms * rate / 1000)));
   for (const op of operations) {
+    // Required parameters were checked by parseTool (checkSoundOps).
     if (op.type === "trim") {
-      const start = at(op.startMs), end = at(op.endMs);
+      const start = at(op.startMs!), end = at(op.endMs!);
       if (end <= start) throw new Error("trim cần endMs lớn hơn startMs và nằm trong độ dài âm thanh.");
       s = s.slice(start, end);
-    } else if (op.type === "volume") s = s.map(v => Math.max(-1, Math.min(1, v * op.percent / 100)));
+    } else if (op.type === "volume") { const gain = clamp(op.percent!, 0, 400) / 100; s = s.map(v => Math.max(-1, Math.min(1, v * gain))); }
     else if (op.type === "fade_in" || op.type === "fade_out") {
-      const n = Math.min(s.length, at(op.ms)); s = s.slice();
+      const n = Math.min(s.length, at(clamp(op.ms!, 1, 60000))); s = s.slice();
       for (let i = 0; i < n; i++) { const index = op.type === "fade_in" ? i : s.length - 1 - i; s[index] *= i / n; }
     } else if (op.type === "reverse") s = s.slice().reverse();
     else if (op.type === "speed") {
-      const length = Math.max(1, Math.floor(s.length / op.factor)), out = new Float32Array(length);
-      for (let i = 0; i < length; i++) { const p = i * op.factor, j = Math.floor(p), f = p - j; out[i] = (s[j] ?? 0) * (1 - f) + (s[j + 1] ?? 0) * f; }
+      const factor = clamp(op.factor!, 0.25, 4), length = Math.max(1, Math.floor(s.length / factor)), out = new Float32Array(length);
+      for (let i = 0; i < length; i++) { const p = i * factor, j = Math.floor(p), f = p - j; out[i] = (s[j] ?? 0) * (1 - f) + (s[j + 1] ?? 0) * f; }
       s = out;
     } else {
-      const delay = Math.max(1, Math.round(op.delayMs * rate / 1000)), out = new Float32Array(s.length + delay * 3);
+      const delay = Math.max(1, Math.round(clamp(op.delayMs!, 20, 2000) * rate / 1000)), decay = clamp(op.decay!, 0.05, 0.9), out = new Float32Array(s.length + delay * 3);
       out.set(s);
-      for (let i = delay; i < out.length; i++) out[i] += out[i - delay] * op.decay;
+      for (let i = delay; i < out.length; i++) out[i] += out[i - delay] * decay;
       s = out.map(v => Math.max(-1, Math.min(1, v)));
     }
     if (s.length > rate * 120) throw new Error("Âm thanh sau chỉnh sửa vượt 2 phút.");

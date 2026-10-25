@@ -46,3 +46,26 @@ describe("tool schema and stream contract", () => {
     expect(requiresConfirmation("update_block", { inputs: { SUBSTACK: [] } })).toBe(true);
   });
 });
+
+describe("operation schemas survive gateways that drop anyOf", () => {
+  it("accepts the exact edit_costume call a real model produced (extra guessed keys, stray amount)", () => {
+    const real = { index: 0, name: "mèo xanh", targetId: "cat-1", operations: [
+      { op: "flip", direction: "horizontal", operation: "flip", axis: "horizontal", horizontal: true, type: "flip" },
+      { amount: 120, operation: "hue", type: "hue", value: 120, degrees: 120, angle: 120, op: "hue" },
+    ] };
+    expect((parseTool("edit_costume", real) as { operations: unknown[] }).operations).toEqual([
+      { type: "flip", axis: "horizontal" }, { type: "hue", degrees: 120, amount: 120 },
+    ]);
+  });
+  it("explains which parameter is missing for an operation type", () => {
+    expect(() => parseTool("edit_costume", { targetId: "c", index: 0, operations: [{ type: "flip" }] })).toThrow(/axis/);
+    expect(() => parseTool("edit_sound", { targetId: "c", index: 0, operations: [{ type: "trim", startMs: 0 }] })).toThrow(/endMs/);
+    expect(() => parseTool("record_run", { durationMs: 500, inputs: [{ device: "mouse", atMs: 0, x: 1 }] })).toThrow(/x và y/);
+  });
+  it("advertises operations as flat objects with a type enum", () => {
+    for (const name of ["edit_costume", "edit_sound", "record_run"]) {
+      const schema = JSON.stringify(TOOL_DEFINITIONS.find(t => t.function.name === name)!.function.parameters);
+      expect(schema).not.toContain("anyOf");
+    }
+  });
+});

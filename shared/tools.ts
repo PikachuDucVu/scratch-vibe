@@ -22,30 +22,66 @@ const assetKind = z.enum(["sprite", "costume", "backdrop", "sound"]);
 const color = z.string().regex(/^(#[0-9a-fA-F]{6}|none)$/);
 const parameter = z.object({ name: text, type: z.enum(["string_number", "boolean"]), default: literal.optional() }).strict();
 const percent = (min: number, max: number) => z.number().min(min).max(max);
-const costumeOperation = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("flip"), axis: z.enum(["horizontal", "vertical"]) }).strict(),
-  z.object({ type: z.literal("rotate"), degrees: z.number().min(-360).max(360) }).strict(),
-  z.object({ type: z.literal("scale"), factor: z.number().min(0.1).max(4) }).strict(),
-  z.object({ type: z.literal("hue"), degrees: z.number().min(-360).max(360) }).strict(),
-  z.object({ type: z.literal("brightness"), amount: percent(-100, 100) }).strict(),
-  z.object({ type: z.literal("saturation"), amount: percent(-100, 100) }).strict(),
-  z.object({ type: z.literal("grayscale") }).strict(),
-  z.object({ type: z.literal("tint"), color: z.string().regex(/^#[0-9a-fA-F]{6}$/), amount: percent(0, 100) }).strict(),
-  z.object({ type: z.literal("opacity"), amount: percent(0, 100) }).strict(),
-]);
-const soundOperation = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("trim"), startMs: z.number().min(0).max(600000), endMs: z.number().min(0).max(600000) }).strict(),
-  z.object({ type: z.literal("volume"), percent: percent(0, 400) }).strict(),
-  z.object({ type: z.literal("fade_in"), ms: z.number().min(1).max(60000) }).strict(),
-  z.object({ type: z.literal("fade_out"), ms: z.number().min(1).max(60000) }).strict(),
-  z.object({ type: z.literal("reverse") }).strict(),
-  z.object({ type: z.literal("speed"), factor: z.number().min(0.25).max(4) }).strict(),
-  z.object({ type: z.literal("echo"), delayMs: z.number().min(20).max(2000), decay: z.number().min(0.05).max(0.9) }).strict(),
-]);
-const recordInput = z.discriminatedUnion("device", [
-  z.object({ device: z.literal("keyboard"), atMs: z.number().int().min(0).max(10000), key: text, durationMs: z.number().int().min(10).max(5000).optional() }).strict(),
-  z.object({ device: z.literal("mouse"), atMs: z.number().int().min(0).max(10000), x: z.number().min(-240).max(240), y: z.number().min(-180).max(180), durationMs: z.number().int().min(10).max(5000).optional() }).strict(),
-]);
+// Operations are flat objects (type + optional parameters), not discriminated unions: some gateways
+// drop anyOf from tool schemas, leaving the model to guess keys. Unknown keys are stripped and
+// required parameters per type are checked when the tool runs.
+export const COSTUME_OPS = ["flip", "rotate", "scale", "hue", "brightness", "saturation", "grayscale", "tint", "opacity"] as const;
+const costumeOperation = z.object({
+  type: z.enum(COSTUME_OPS).describe("flip needs axis; rotate needs degrees; scale needs factor; hue needs degrees; brightness/saturation need amount (-100..100); tint needs color and amount (0..100); opacity needs amount (0..100); grayscale needs nothing"),
+  // Wide numeric bounds: a stray parameter for another type must not reject the call; values are clamped when applied.
+  axis: z.enum(["horizontal", "vertical"]).optional(),
+  degrees: z.number().min(-3600).max(3600).optional(),
+  factor: z.number().min(0.01).max(100).optional(),
+  amount: z.number().min(-1000).max(1000).optional(),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+});
+export const SOUND_OPS = ["trim", "volume", "fade_in", "fade_out", "reverse", "speed", "echo"] as const;
+const soundOperation = z.object({
+  type: z.enum(SOUND_OPS).describe("trim needs startMs and endMs; volume needs percent (0..400); fade_in/fade_out need ms; speed needs factor (0.25..4); echo needs delayMs and decay (0.05..0.9); reverse needs nothing"),
+  startMs: z.number().min(0).max(600000).optional(),
+  endMs: z.number().min(0).max(600000).optional(),
+  percent: z.number().min(0).max(10000).optional(),
+  ms: z.number().min(0).max(600000).optional(),
+  factor: z.number().min(0.01).max(100).optional(),
+  delayMs: z.number().min(0).max(10000).optional(),
+  decay: z.number().min(0).max(1).optional(),
+});
+const recordInput = z.object({
+  device: z.enum(["keyboard", "mouse"]).describe("keyboard needs key; mouse needs x and y (stage coordinates)"),
+  atMs: z.number().int().min(0).max(10000),
+  key: text.optional(),
+  x: z.number().min(-240).max(240).optional(),
+  y: z.number().min(-180).max(180).optional(),
+  durationMs: z.number().int().min(10).max(5000).optional(),
+});
+const need = (ok: boolean, message: string) => { if (!ok) throw new Error(message); };
+export const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+// Validates the parameters each operation type requires (the schema keeps them optional).
+export function checkCostumeOps(ops: z.infer<typeof costumeOperation>[]) {
+  for (const op of ops) {
+    if (op.type === "flip") need(Boolean(op.axis), "flip cần axis: horizontal hoặc vertical.");
+    if (op.type === "rotate" || op.type === "hue") need(op.degrees !== undefined, `${op.type} cần degrees.`);
+    if (op.type === "scale") need(op.factor !== undefined, "scale cần factor (0.1..4).");
+    if (op.type === "brightness" || op.type === "saturation") need(op.amount !== undefined, `${op.type} cần amount (-100..100).`);
+    if (op.type === "tint") need(Boolean(op.color) && op.amount !== undefined, "tint cần color (#rrggbb) và amount (0..100).");
+    if (op.type === "opacity") need(op.amount !== undefined, "opacity cần amount (0..100).");
+  }
+}
+export function checkSoundOps(ops: z.infer<typeof soundOperation>[]) {
+  for (const op of ops) {
+    if (op.type === "trim") need(op.startMs !== undefined && op.endMs !== undefined, "trim cần startMs và endMs.");
+    if (op.type === "volume") need(op.percent !== undefined, "volume cần percent (0..400).");
+    if (op.type === "fade_in" || op.type === "fade_out") need(op.ms !== undefined, `${op.type} cần ms.`);
+    if (op.type === "speed") need(op.factor !== undefined, "speed cần factor (0.25..4).");
+    if (op.type === "echo") need(op.delayMs !== undefined && op.decay !== undefined, "echo cần delayMs và decay.");
+  }
+}
+export function checkRecordInputs(inputs: z.infer<typeof recordInput>[]) {
+  for (const input of inputs) {
+    if (input.device === "keyboard") need(Boolean(input.key), "input keyboard cần key.");
+    else need(input.x !== undefined && input.y !== undefined, "input mouse cần x và y.");
+  }
+}
 export const TOOL_SCHEMAS = {
   get_project: z.object(page).strict(),
   get_scripts: target.extend({ ...page, scriptId: text.optional() }),
@@ -126,7 +162,11 @@ export function parseTool(name: string, args: unknown) {
     if (value && typeof value === "object") for (const item of Object.values(value)) visit(item, depth + 1);
   }
   visit(args, 0);
-  return TOOL_SCHEMAS[name as ToolName].parse(args);
+  const parsed = TOOL_SCHEMAS[name as ToolName].parse(args) as Record<string, unknown>;
+  if (name === "edit_costume") checkCostumeOps(parsed.operations as Parameters<typeof checkCostumeOps>[0]);
+  if (name === "edit_sound") checkSoundOps(parsed.operations as Parameters<typeof checkSoundOps>[0]);
+  if (name === "record_run" && parsed.inputs) checkRecordInputs(parsed.inputs as Parameters<typeof checkRecordInputs>[0]);
+  return parsed;
 }
 const descriptions: Record<ToolName, string> = {
   get_project: "Read live target IDs and compact properties. Paginated; follow nextOffset. Variable/list values are previews; use get_variables for details. Read before editing.",
