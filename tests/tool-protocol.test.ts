@@ -21,8 +21,10 @@ describe("tool schema and stream contract", () => {
       expect(() => parseTool(name, args)).toThrow();
     }
     const args = { targetId: "cat", scripts: [[{ opcode: "event_whenflagclicked" }, { opcode: "control_repeat", inputs: { TIMES: 2, SUBSTACK: [{ opcode: "motion_movesteps", inputs: { STEPS: 10 } }] } }]] };
-    expect(ajv.validate(TOOL_DEFINITIONS.find(t => t.function.name === "add_scripts")!.function.parameters, args)).toBe(true);
+    // Advertised as JSON text; runtime accepts both the text and the structured form.
+    expect(ajv.validate(TOOL_DEFINITIONS.find(t => t.function.name === "add_scripts")!.function.parameters, { ...args, scripts: JSON.stringify(args.scripts) })).toBe(true);
     expect(() => parseTool("add_scripts", args)).not.toThrow();
+    expect(() => parseTool("add_scripts", { ...args, scripts: JSON.stringify(args.scripts) })).not.toThrow();
   });
   it.each([call, call + finish, call + "data: [DONE]\n\n", call + delta({ error: { message: "SECRET" } }) + finish + "data: [DONE]\n\n", call + "data: {invalid}\n\n" + finish + "data: [DONE]\n\n"])("rejects incomplete/error streams before any tool can run", async stream => {
     mockStream(stream);
@@ -67,5 +69,22 @@ describe("operation schemas survive gateways that drop anyOf", () => {
       const schema = JSON.stringify(TOOL_DEFINITIONS.find(t => t.function.name === name)!.function.parameters);
       expect(schema).not.toContain("anyOf");
     }
+  });
+});
+
+describe("block payloads as JSON text (gateway-safe)", () => {
+  const scripts = [[{ opcode: "event_whenflagclicked" }, { opcode: "control_forever", inputs: { SUBSTACK: [{ opcode: "motion_movesteps", inputs: { STEPS: 5 } }] } }]];
+  it("accepts the JSON-string form a real model produces and validates it like structured input", () => {
+    expect(parseTool("add_scripts", { targetId: "cat-1", scripts: JSON.stringify(scripts) })).toEqual(parseTool("add_scripts", { targetId: "cat-1", scripts }));
+    expect(parseTool("update_block", { targetId: "c", blockId: "b", inputs: '{"STEPS": 10}' })).toMatchObject({ inputs: { STEPS: 10 } });
+    expect(() => parseTool("add_scripts", { targetId: "c", scripts: "[[{bad json" })).toThrow(/scripts phải là JSON hợp lệ/);
+    expect(() => parseTool("add_scripts", { targetId: "c", scripts: JSON.stringify([[{ opcode: "x", evil: 1 }]]) })).toThrow();
+  });
+  it("advertises block payloads as strings and never uses $ref or schema-valued maps", () => {
+    const text = JSON.stringify(TOOL_DEFINITIONS);
+    expect(text).not.toContain("$ref");
+    expect(text).not.toMatch(/"additionalProperties":\{/);
+    const addScripts = TOOL_DEFINITIONS.find(t => t.function.name === "add_scripts")!.function.parameters as { properties: Record<string, { type: string }> };
+    expect(addScripts.properties.scripts.type).toBe("string");
   });
 });
