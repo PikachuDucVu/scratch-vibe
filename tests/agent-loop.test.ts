@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runAgent, trimHistory, type ToolEvent } from "../src/agent/loop";
+import { compactMessages, runAgent, trimHistory, type ToolEvent } from "../src/agent/loop";
 import { validateConversation, type ChatMessage } from "../shared/chat";
 import type { EditorHandle } from "../src/components/ScratchEditor";
 
@@ -56,13 +56,32 @@ describe("agent tool loop", () => {
     expect(h.history.filter(message => message.role === "tool")).toHaveLength(2);
     expect(() => validateConversation(h.history)).not.toThrow();
   });
-  it("bounds iterations and keeps complete tool batches", async () => {
+  it("has no step limit and compacts context so every request stays valid and bounded", async () => {
     const h = harness();
+    // Large tool results force compaction long before 60 steps.
+    vi.mocked(h.editor.tool).mockResolvedValue({ blob: "x".repeat(40000) });
     let number = 0;
-    const reply = vi.fn().mockImplementation(async () => ({ role: "assistant", content: null, tool_calls: [call(`a${number++}`)] }));
-    await expect(runAgent({ ...h.options, reply })).rejects.toThrow(/12 bước/);
-    expect(reply).toHaveBeenCalledTimes(12);
+    const sent: ChatMessage[][] = [];
+    const reply = vi.fn().mockImplementation(async (messages: ChatMessage[]) => {
+      sent.push([...messages]); // Copy: the loop appends to the same array after sending.
+      return number < 60 ? { role: "assistant", content: null, tool_calls: [call(`a${number++}`)] } : { role: "assistant", content: "Xong." };
+    });
+    await expect(runAgent({ ...h.options, reply })).resolves.toBe("Xong.");
+    expect(reply).toHaveBeenCalledTimes(61);
+    for (const messages of sent) {
+      expect(messages.length).toBeLessThanOrEqual(90);
+      expect(JSON.stringify(messages).length).toBeLessThanOrEqual(700000);
+      expect(messages[0]).toEqual({ role: "user", content: "Hãy tạo chương trình" });
+      expect(() => validateConversation(messages)).not.toThrow();
+    }
     expect(() => validateConversation(h.history)).not.toThrow();
+  });
+  it("keeps only the most recent images when compacting", () => {
+    const prompt: ChatMessage = { role: "user", content: "p" };
+    const image = (i: number): ChatMessage => ({ role: "user", content: [{ type: "text", text: `img${i}` }, { type: "image_url", image_url: { url: "data:image/jpeg;base64,YWJj", detail: "low" } }] });
+    const compacted = compactMessages([prompt, ...[0, 1, 2, 3, 4].map(image)], prompt);
+    expect(compacted.filter(m => Array.isArray(m.content)).map(m => (m.content as { text?: string }[])[0].text)).toEqual(["img2", "img3", "img4"]);
+    expect(compacted).toHaveLength(6);
   });
   it("trims by complete user turns, not through tool results", () => {
     const turn: ChatMessage[] = [{ role: "user", content: "test" }, { role: "assistant", content: null, tool_calls: [call("a")] }, { role: "tool", tool_call_id: "a", content: "{}" }, { role: "assistant", content: "ok" }];
@@ -79,5 +98,43 @@ describe("agent tool loop", () => {
       model: "o3-mini",
       reasoningEffort: "high",
     });
+  });
+});
+
+describe("expanded tool permissions and images", () => {
+  it.each(["delete_sprite", "delete_script", "restore_snapshot", "import_file", "run_project", "test_input"])("does not execute %s without a confirmation handler", async name => {
+    const h = harness();
+    const args = name === "restore_snapshot" ? { snapshotId: "s" } : name === "import_file" ? { fileId: "f" } : name === "test_input" ? { device: "keyboard", key: "space" } : name === "run_project" ? {} : { targetId: "cat", ...(name === "delete_script" ? { scriptId: "s" } : {}) };
+    const reply = vi.fn().mockResolvedValueOnce({ role: "assistant", content: null, tool_calls: [call("a", name, args)] }).mockResolvedValueOnce({ role: "assistant", content: "Không thực hiện." });
+    await runAgent({ ...h.options, reply });
+    expect(h.editor.tool).not.toHaveBeenCalledWith(name, expect.anything());
+    expect(h.events.at(-1)?.status).toBe("error");
+  });
+  it("cancels a confirmed operation when cancellation occurred inside confirmation", async () => {
+    const h = harness();
+    const confirmTool = vi.fn(async () => { h.abort.abort(); return true; });
+    const reply = vi.fn().mockResolvedValue({ role: "assistant", content: null, tool_calls: [call("a", "delete_sprite", { targetId: "cat" })] });
+    await expect(runAgent({ ...h.options, reply, confirmTool })).rejects.toThrow();
+    expect(h.editor.tool).not.toHaveBeenCalledWith("delete_sprite", expect.anything());
+    expect(() => validateConversation(h.history)).not.toThrow();
+  });
+  it("sends captures as vision input only after all tool results, without base64 in tool text", async () => {
+    const h = harness();
+    vi.mocked(h.editor.tool).mockImplementation(async name => name === "capture_stage" ? { image: "data:image/jpeg;base64,YWJj", width: 480, height: 360 } : { targets: [] });
+    const reply = vi.fn().mockResolvedValueOnce({ role: "assistant", content: null, tool_calls: [call("a", "capture_stage"), call("b", "get_project")] }).mockResolvedValueOnce({ role: "assistant", content: "Đã xem ảnh." });
+    await runAgent({ ...h.options, reply });
+    expect(h.history[4]).toMatchObject({ role: "user", content: [{ type: "text" }, { type: "image_url" }] });
+    const result = h.history.find(m => m.role === "tool")!;
+    expect(JSON.stringify(result)).not.toContain("base64");
+    expect(() => validateConversation(h.history)).not.toThrow();
+  });
+  it("sends costume images to the model with their metadata", async () => {
+    const h = harness();
+    vi.mocked(h.editor.tool).mockImplementation(async name => name === "get_costume_image" ? { name: "cat-a", index: 0, image: "data:image/jpeg;base64,YWJj" } : { targets: [] });
+    const reply = vi.fn().mockResolvedValueOnce({ role: "assistant", content: null, tool_calls: [call("a", "get_costume_image", { targetId: "cat" })] }).mockResolvedValueOnce({ role: "assistant", content: "Mèo màu cam." });
+    await runAgent({ ...h.options, reply });
+    expect(h.history.find(m => m.role === "tool")).toMatchObject({ content: JSON.stringify({ name: "cat-a", index: 0, imageFollows: true }) });
+    expect(h.history.at(-2)).toMatchObject({ role: "user", content: [{ type: "text", text: expect.stringContaining("get_costume_image") }, { type: "image_url" }] });
+    expect(() => validateConversation(h.history)).not.toThrow();
   });
 });

@@ -51,14 +51,17 @@ test("real Scratch VM: demo, nested blocks, run, export/import and undo", async 
   await expect(page.getByText("Đã khôi phục project", { exact: false })).toBeVisible();
   expect((await project(page)).targets.find(target => !target.isStage)?.scriptCount).toBe(0);
   page.once("dialog", dialog => dialog.accept());
-  await page.locator('input[type="file"]').setInputFiles({ name: "roundtrip.sb3", mimeType: "application/x.scratch.sb3", buffer: await readFile(path!) });
+  await page.getByLabel("Mở project Scratch").setInputFiles({ name: "roundtrip.sb3", mimeType: "application/x.scratch.sb3", buffer: await readFile(path!) });
   await expect(page.getByText("Đã mở", { exact: false })).toBeVisible();
   expect((await project(page)).targets.find(target => !target.isStage)?.scriptCount).toBe(1);
   expect(errors).toEqual([]);
 });
 
 test("mock provider -> real agent loop -> real VM blocks; rollback invalid script", async ({ page }) => {
-  await page.route("**/api/config", route => route.fulfill({ json: { configured: true, model: "test-provider" } }));
+  await page.addInitScript(() => {
+    localStorage.setItem("scratch_vibe_ai_settings", JSON.stringify({ baseUrl: "https://mock-provider.example/v1", model: "test-provider" }));
+    sessionStorage.setItem("scratch_vibe_api_key", "test-browser-key");
+  });
   let step = 0;
   await page.route("**/api/agent", async route => {
     const input = route.request().postDataJSON();

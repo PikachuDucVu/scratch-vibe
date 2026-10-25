@@ -16,3 +16,4 @@ public/*.hex
 coverage/
 playwright-report/
 test-results/
+output/

@@ -1,7 +1,10 @@
 import { test, expect } from "@playwright/test";
 
 test("chat formats Vietnamese Scratch instructions with bold text and bullet lists", async ({ page }) => {
-  await page.route("**/api/config", route => route.fulfill({ json: { configured: true, model: "test-provider" } }));
+  await page.addInitScript(() => {
+    localStorage.setItem("scratch_vibe_ai_settings", JSON.stringify({ baseUrl: "https://mock-provider.example/v1", model: "test-provider" }));
+    sessionStorage.setItem("scratch_vibe_api_key", "test-browser-key");
+  });
   await page.route("**/api/agent", route => route.fulfill({ json: {
     content: "Đã thêm điều khiển cho mèo:\n- Bấm **cờ xanh**: mèo về giữa sân khấu tại **(0, 0)**.\n- Giữ **các phím mũi tên**: mèo di chuyển theo hướng tương ứng.\n\nBấm cờ xanh để bắt đầu chơi nhé!",
   } }));

@@ -8,5 +8,5 @@ export default defineConfig({
   expect: { timeout: 45000 },
   workers: 1,
   use: { baseURL, viewport: { width: 1500, height: 950 }, trace: "retain-on-failure", screenshot: "only-on-failure", launchOptions: { args: ["--enable-unsafe-swiftshader"] } },
-  webServer: { command: `OPENAI_API_KEY= PORT=${port} npm start`, url: `${baseURL}/api/config`, reuseExistingServer: false, timeout: 30000 },
+  webServer: { command: `PORT=${port} npm start`, url: `${baseURL}/api/config`, reuseExistingServer: false, timeout: 30000 },
 });

@@ -3,7 +3,7 @@
 :root { font-family: 'Be Vietnam Pro', system-ui, sans-serif; color: #152337; background: #f1f4f8; font-synthesis: none; -webkit-font-smoothing: antialiased; }
 * { box-sizing: border-box; }
 body { margin: 0; }
-button, textarea { font: inherit; }
+button, textarea, input, select { font: inherit; }
 button { cursor: pointer; border: 1px solid #dae1eb; border-radius: 9px; padding: 9px 12px; background: #fff; color: #334155; font-size: 12px; font-weight: 600; transition: background .15s, border-color .15s; }
 button:hover:not(:disabled) { background: #f0f4ff; border-color: #a5b4fc; }
 button:disabled { opacity: .45; cursor: not-allowed; }
@@ -97,11 +97,17 @@ h3 { margin: 0; font-size: 14px; }
 .error { background: #fff1f2; color: #be123c; border: 1px solid #ffe4e6; }
 .composer-area { padding: 13px; border-top: 1px solid #edf0f5; background: #fff; }
 .setup-note { font-size: 10px; line-height: 1.8; margin: 0 2px 12px; color: #9a6b27; }
+.setup-link { border: 0; padding: 0; color: #6d4aff; background: transparent; font-size: inherit; text-decoration: underline; }
 code { font-size: 9px; padding: 1px 3px; background: #faf5ec; border-radius: 3px; }
 form { padding: 12px; background: #fbfcfe; border: 1px solid #dce2ed; border-radius: 12px; }
 textarea { resize: vertical; width: 100%; min-height: 66px; max-height: 180px; border: 0; color: #334155; background: transparent; font-size: 12px; line-height: 1.8; }
 textarea:focus { outline: none; }
 textarea::placeholder { color: #a5aebe; }
+.chat-model-picker { display: flex; align-items: center; gap: 7px; padding-top: 9px; border-top: 1px solid #e8ecf3; min-width: 0; }
+.chat-model-picker label { font-size: 9px; color: #64748b; white-space: nowrap; }
+.chat-model-picker select { flex: 1; min-width: 0; width: 0; border: 1px solid #ddd6fe; border-radius: 6px; padding: 6px; font-size: 10px; color: #6943b7; background: #f5f3ff; }
+.chat-model-picker select:focus-visible { outline: 2px solid #a5b4fc; outline-offset: 2px; }
+.chat-model-picker .model-edit-btn { margin-left: 0; flex-shrink: 0; }
 .composer-bottom { display: flex; justify-content: space-between; align-items: center; gap: 7px; padding-top: 8px; }
 .composer-bottom > span { color: #a1abbb; font-size: 8px; }
 .send-button { background: #7957ec; color: #fff; border: none; padding: 8px 10px; font-size: 10px; white-space: nowrap; }
@@ -134,6 +140,9 @@ footer { display: flex; align-items: center; justify-content: space-between; col
 .form-hint { margin: 0; font-size: 10.5px; color: #64748b; line-height: 1.45; }
 
 .input-with-button { display: flex; gap: 8px; }
+.input-with-button .form-input { min-width: 0; }
+.remember-key { display: flex; align-items: center; gap: 7px; color: #475569; font-size: 11px; line-height: 1.6; }
+.remember-key input { accent-color: #7957ec; flex-shrink: 0; }
 .form-input, .form-select { width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 12px; color: #1e293b; background: #fff; transition: border-color .15s, box-shadow .15s; }
 .form-input:focus, .form-select:focus { outline: none; border-color: #7c5cff; box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.15); }
 .form-select { cursor: pointer; appearance: auto; }
@@ -152,3 +161,5 @@ footer { display: flex; align-items: center; justify-content: space-between; col
 .btn-secondary:hover { background: #f1f5f9; }
 .btn-primary { background: #7957ec; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; font-size: 11px; font-weight: 600; transition: background .15s; }
 .btn-primary:hover { background: #6845d5; }
+
+.stage-capture { display: block; width: 100%; max-width: 480px; height: auto; border-radius: 8px; margin: 8px 0; }

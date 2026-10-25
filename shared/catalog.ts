@@ -1,9 +1,12 @@
-export type InputSpec = "number" | "text" | "boolean" | "stack" | { menu: string; field: string; values?: readonly string[] };
+export type InputSpec = "number" | "text" | "boolean" | "stack" | "color" | { menu: string; field: string; values?: readonly string[]; variableType?: string; reporter?: boolean };
 export interface BlockSpec {
   kind: "hat" | "stack" | "reporter" | "boolean" | "terminal";
   inputs?: Record<string, InputSpec>;
   fields?: Record<string, readonly string[] | null>;
   variable?: boolean;
+  variableType?: string;
+  stageOnly?: boolean;
+  extension?: "pen" | "music";
   spriteOnly?: boolean;
 }
 const s = (inputs?: Record<string, InputSpec>, extra?: Partial<BlockSpec>): BlockSpec => ({ kind: "stack", inputs, ...extra });
@@ -11,7 +14,7 @@ const r = (inputs?: Record<string, InputSpec>, extra?: Partial<BlockSpec>): Bloc
 const b = (inputs: Record<string, InputSpec>): BlockSpec => ({ kind: "boolean", inputs });
 const keyValues = ["space", "up arrow", "down arrow", "left arrow", "right arrow", "any", ..."abcdefghijklmnopqrstuvwxyz0123456789"];
 
-// Deliberate allowlist: no eval, JavaScript, network, arbitrary extensions or procedures.
+// Allowlisted core blocks and safe built-in extensions; never arbitrary opcodes/code.
 export const CATALOG: Record<string, BlockSpec> = {
   event_whenflagclicked: { kind: "hat" },
   event_whenkeypressed: { kind: "hat", fields: { KEY_OPTION: keyValues } },
@@ -43,8 +46,8 @@ export const CATALOG: Record<string, BlockSpec> = {
   looks_size: r(undefined, { spriteOnly: true }),
   looks_nextcostume: s(undefined, { spriteOnly: true }),
   looks_nextbackdrop: s(),
-  looks_switchcostumeto: s({ COSTUME: { menu: "looks_costume", field: "COSTUME" } }, { spriteOnly: true }),
-  looks_switchbackdropto: s({ BACKDROP: { menu: "looks_backdrops", field: "BACKDROP" } }),
+  looks_switchcostumeto: s({ COSTUME: { menu: "looks_costume", field: "COSTUME", reporter: true } }, { spriteOnly: true }),
+  looks_switchbackdropto: s({ BACKDROP: { menu: "looks_backdrops", field: "BACKDROP", reporter: true } }),
   looks_changeeffectby: s({ CHANGE: "number" }, { fields: { EFFECT: ["COLOR", "FISHEYE", "WHIRL", "PIXELATE", "MOSAIC", "BRIGHTNESS", "GHOST"] } }),
   looks_cleargraphiceffects: s(),
   control_wait: s({ DURATION: "number" }),
@@ -54,9 +57,9 @@ export const CATALOG: Record<string, BlockSpec> = {
   control_if_else: s({ CONDITION: "boolean", SUBSTACK: "stack", SUBSTACK2: "stack" }),
   control_wait_until: s({ CONDITION: "boolean" }),
   control_repeat_until: s({ CONDITION: "boolean", SUBSTACK: "stack" }),
-  control_stop: s(undefined, { kind: "terminal", fields: { STOP_OPTION: ["all", "this script"] } }),
-  sensing_keypressed: b({ KEY_OPTION: { menu: "sensing_keyoptions", field: "KEY_OPTION", values: keyValues } }),
-  sensing_touchingobject: b({ TOUCHINGOBJECTMENU: { menu: "sensing_touchingobjectmenu", field: "TOUCHINGOBJECTMENU" } }),
+  control_stop: s(undefined, { kind: "terminal", fields: { STOP_OPTION: ["all", "this script", "other scripts in sprite"] } }),
+  sensing_keypressed: b({ KEY_OPTION: { menu: "sensing_keyoptions", field: "KEY_OPTION", values: keyValues, reporter: true } }),
+  sensing_touchingobject: b({ TOUCHINGOBJECTMENU: { menu: "sensing_touchingobjectmenu", field: "TOUCHINGOBJECTMENU", reporter: true } }),
   sensing_mousedown: { kind: "boolean" },
   sensing_mousex: r(),
   sensing_mousey: r(),
@@ -82,12 +85,84 @@ export const CATALOG: Record<string, BlockSpec> = {
   data_variable: r(undefined, { fields: { VARIABLE: null }, variable: true }),
   data_setvariableto: s({ VALUE: "text" }, { fields: { VARIABLE: null }, variable: true }),
   data_changevariableby: s({ VALUE: "number" }, { fields: { VARIABLE: null }, variable: true }),
+  event_whenstageclicked: { kind: "hat", stageOnly: true },
+  event_whengreaterthan: { kind: "hat", fields: { WHENGREATERTHANMENU: ["LOUDNESS", "TIMER"] }, inputs: { VALUE: "number" } },
+  event_whenbroadcastreceived: { kind: "hat", fields: { BROADCAST_OPTION: null }, variableType: "broadcast_msg" },
+  event_broadcast: s({ BROADCAST_INPUT: { menu: "event_broadcast_menu", field: "BROADCAST_OPTION", variableType: "broadcast_msg", reporter: true } }),
+  event_broadcastandwait: s({ BROADCAST_INPUT: { menu: "event_broadcast_menu", field: "BROADCAST_OPTION", variableType: "broadcast_msg", reporter: true } }),
+  motion_goto: s({ TO: { menu: "motion_goto_menu", field: "TO", reporter: true } }, { spriteOnly: true }),
+  motion_glideto: s({ SECS: "number", TO: { menu: "motion_glideto_menu", field: "TO", reporter: true } }, { spriteOnly: true }),
+  motion_pointtowards: s({ TOWARDS: { menu: "motion_pointtowards_menu", field: "TOWARDS", reporter: true } }, { spriteOnly: true }),
+  looks_switchbackdroptoandwait: s({ BACKDROP: { menu: "looks_backdrops", field: "BACKDROP", reporter: true } }),
+  looks_seteffectto: s({ VALUE: "number" }, { fields: { EFFECT: ["COLOR", "FISHEYE", "WHIRL", "PIXELATE", "MOSAIC", "BRIGHTNESS", "GHOST"] } }),
+  looks_gotofrontback: s(undefined, { spriteOnly: true, fields: { FRONT_BACK: ["front", "back"] } }),
+  looks_goforwardbackwardlayers: s({ NUM: "number" }, { spriteOnly: true, fields: { FORWARD_BACKWARD: ["forward", "backward"] } }),
+  looks_costumenumbername: r(undefined, { spriteOnly: true, fields: { NUMBER_NAME: ["number", "name"] } }),
+  looks_backdropnumbername: r(undefined, { fields: { NUMBER_NAME: ["number", "name"] } }),
+  sound_play: s({ SOUND_MENU: { menu: "sound_sounds_menu", field: "SOUND_MENU", reporter: true } }),
+  sound_playuntildone: s({ SOUND_MENU: { menu: "sound_sounds_menu", field: "SOUND_MENU", reporter: true } }),
+  sound_stopallsounds: s(),
+  sound_seteffectto: s({ VALUE: "number" }, { fields: { EFFECT: ["PITCH", "PAN"] } }),
+  sound_changeeffectby: s({ VALUE: "number" }, { fields: { EFFECT: ["PITCH", "PAN"] } }),
+  sound_cleareffects: s(),
+  sound_setvolumeto: s({ VOLUME: "number" }),
+  sound_changevolumeby: s({ VOLUME: "number" }),
+  sound_volume: r(),
+  control_start_as_clone: { kind: "hat", spriteOnly: true },
+  control_create_clone_of: s({ CLONE_OPTION: { menu: "control_create_clone_of_menu", field: "CLONE_OPTION", reporter: true } }),
+  control_delete_this_clone: s(undefined, { kind: "terminal", spriteOnly: true }),
+  sensing_touchingcolor: b({ COLOR: "color" }),
+  sensing_coloristouchingcolor: b({ COLOR: "color", COLOR2: "color" }),
+  sensing_distanceto: r({ DISTANCETOMENU: { menu: "sensing_distancetomenu", field: "DISTANCETOMENU", reporter: true } }, { spriteOnly: true }),
+  sensing_of: r({ OBJECT: { menu: "sensing_of_object_menu", field: "OBJECT", reporter: true } }, { fields: { PROPERTY: null } }),
+  sensing_setdragmode: s(undefined, { spriteOnly: true, fields: { DRAG_MODE: ["draggable", "not draggable"] } }),
+  sensing_current: r(undefined, { fields: { CURRENTMENU: ["YEAR", "MONTH", "DATE", "DAYOFWEEK", "HOUR", "MINUTE", "SECOND"] } }),
+  sensing_dayssince2000: r(),
+  sensing_loudness: r(),
+  sensing_username: r(),
+  operator_letter_of: r({ LETTER: "number", STRING: "text" }),
+  operator_contains: b({ STRING1: "text", STRING2: "text" }),
+  operator_mathop: r({ NUM: "number" }, { fields: { OPERATOR: ["abs", "floor", "ceiling", "sqrt", "sin", "cos", "tan", "asin", "acos", "atan", "ln", "log", "e ^", "10 ^"] } }),
+  data_showvariable: s(undefined, { fields: { VARIABLE: null }, variable: true }),
+  data_hidevariable: s(undefined, { fields: { VARIABLE: null }, variable: true }),
+  data_listcontents: r(undefined, { fields: { LIST: null }, variableType: "list" }),
+  data_addtolist: s({ ITEM: "text" }, { fields: { LIST: null }, variableType: "list" }),
+  data_deleteoflist: s({ INDEX: "text" }, { fields: { LIST: null }, variableType: "list" }),
+  data_deletealloflist: s(undefined, { fields: { LIST: null }, variableType: "list" }),
+  data_insertatlist: s({ INDEX: "text", ITEM: "text" }, { fields: { LIST: null }, variableType: "list" }),
+  data_replaceitemoflist: s({ INDEX: "text", ITEM: "text" }, { fields: { LIST: null }, variableType: "list" }),
+  data_itemoflist: r({ INDEX: "text" }, { fields: { LIST: null }, variableType: "list" }),
+  data_itemnumoflist: r({ ITEM: "text" }, { fields: { LIST: null }, variableType: "list" }),
+  data_lengthoflist: r(undefined, { fields: { LIST: null }, variableType: "list" }),
+  data_listcontainsitem: { kind: "boolean", inputs: { ITEM: "text" }, fields: { LIST: null }, variableType: "list" },
+  data_showlist: s(undefined, { fields: { LIST: null }, variableType: "list" }),
+  data_hidelist: s(undefined, { fields: { LIST: null }, variableType: "list" }),
+  procedures_call: s(undefined, { fields: { PROCEDURE: null } }),
+  argument_reporter_string_number: r(undefined, { fields: { VALUE: null } }),
+  argument_reporter_boolean: { kind: "boolean", fields: { VALUE: null } },
+  pen_clear: s(undefined, { extension: "pen" }),
+  pen_stamp: s(undefined, { extension: "pen", spriteOnly: true }),
+  pen_penDown: s(undefined, { extension: "pen", spriteOnly: true }),
+  pen_penUp: s(undefined, { extension: "pen", spriteOnly: true }),
+  pen_setPenColorToColor: s({ COLOR: "color" }, { extension: "pen", spriteOnly: true }),
+  pen_changePenColorParamBy: s({ COLOR_PARAM: { menu: "pen_menu_colorParam", field: "colorParam", values: ["color", "saturation", "brightness", "transparency"], reporter: true }, VALUE: "number" }, { extension: "pen", spriteOnly: true }),
+  pen_setPenColorParamTo: s({ COLOR_PARAM: { menu: "pen_menu_colorParam", field: "colorParam", values: ["color", "saturation", "brightness", "transparency"], reporter: true }, VALUE: "number" }, { extension: "pen", spriteOnly: true }),
+  pen_changePenSizeBy: s({ SIZE: "number" }, { extension: "pen", spriteOnly: true }),
+  pen_setPenSizeTo: s({ SIZE: "number" }, { extension: "pen", spriteOnly: true }),
+  music_playDrumForBeats: s({ DRUM: { menu: "music_menu_DRUM", field: "DRUM", reporter: true }, BEATS: "number" }, { extension: "music" }),
+  music_restForBeats: s({ BEATS: "number" }, { extension: "music" }),
+  music_playNoteForBeats: s({ NOTE: "number", BEATS: "number" }, { extension: "music" }),
+  music_setInstrument: s({ INSTRUMENT: { menu: "music_menu_INSTRUMENT", field: "INSTRUMENT", reporter: true } }, { extension: "music" }),
+  music_setTempo: s({ TEMPO: "number" }, { extension: "music" }),
+  music_changeTempo: s({ TEMPO: "number" }, { extension: "music" }),
+  music_getTempo: r(undefined, { extension: "music" }),
+
 };
 
 export function catalogHelp(): string {
   return Object.entries(CATALOG).map(([opcode, spec]) => {
     const inputs = Object.entries(spec.inputs ?? {}).map(([name, type]) => `${name}:${typeof type === "string" ? type : `menu(${type.field})${type.values ? `[${type.values.join("|")}]` : ""}`}`).join(", ");
     const fields = Object.entries(spec.fields ?? {}).map(([name, values]) => `${name}:${values ? values.join("|") : "name"}`).join(", ");
-    return `${opcode} (${spec.kind}${spec.spriteOnly ? ", sprite only" : ""})${inputs ? ` inputs{${inputs}}` : ""}${fields ? ` fields{${fields}}` : ""}`;
+    return `${opcode} (${spec.kind}${spec.spriteOnly ? ", sprite only" : ""}${spec.stageOnly ? ", stage only" : ""}${spec.extension ? `, load ${spec.extension} first` : ""})${inputs ? ` inputs{${inputs}}` : ""}${fields ? ` fields{${fields}}` : ""}`;
   }).join("\n");
 }

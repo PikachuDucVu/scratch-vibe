@@ -1,3 +1,4 @@
+import { TOOL_DEFINITIONS } from "../shared/tools";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { once } from "node:events";
 import { request, type Server } from "node:http";
@@ -8,7 +9,7 @@ import { validateConversation } from "../shared/chat";
 let server: Server;
 let base: string;
 beforeAll(async () => {
-  server = createApp({ config: { apiKey: "", model: "test-model", baseUrl: "https://api.openai.com/v1" }, port: 3001, appOrigin: "http://127.0.0.1:5173" }).listen(0, "127.0.0.1");
+  server = createApp({ port: 3001, appOrigin: "http://127.0.0.1:5173" }).listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
@@ -18,7 +19,7 @@ afterAll(async () => { await new Promise<void>((resolve, reject) => server.close
 describe("local API boundaries", () => {
   it("reports setup without exposing API credentials", async () => {
     const res = await fetch(`${base}/api/config`);
-    expect(await res.json()).toEqual({ configured: false, model: "test-model" });
+    expect(await res.json()).toEqual({ configured: false, model: "gpt-4.1" });
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
   it("rejects cross-origin requests", async () => {
@@ -35,8 +36,8 @@ describe("local API boundaries", () => {
   });
   it("has a useful missing-key error", async () => {
     const res = await fetch(`${base}/api/agent`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-    expect(res.status).toBe(503);
-    expect((await res.json()).error).toContain("OPENAI_API_KEY");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("Cài đặt AI");
   });
   it("handles malformed JSON safely", async () => {
     const res = await fetch(`${base}/api/agent`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{" });
@@ -46,25 +47,58 @@ describe("local API boundaries", () => {
     const res = await fetch(`${base}/api/scratch-assets/https://evil.example/get`);
     expect(res.status).toBe(400);
   });
-  it("validates url parameter on /api/models", async () => {
-    const badProtocol = await fetch(`${base}/api/models?url=ftp://example.com/models`);
-    expect(badProtocol.status).toBe(400);
-    const malformed = await fetch(`${base}/api/models?url=not-a-url`);
-    expect(malformed.status).toBe(400);
+  const connection = { baseUrl: "https://custom-api.example/v1", apiKey: "browser-only-key" };
+  const post = (path: string, data: unknown) => fetch(`${base}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
   });
-  it("fetches and parses models from a valid custom URL", async () => {
+  it("validates browser credentials and model URLs", async () => {
+    for (const baseUrl of ["ftp://example.com", "not-a-url", "http://example.com/v1", "https://user:pass@example.com/v1", "https://example.com/v1?key=secret"]) {
+      expect((await post("/api/models", { ...connection, baseUrl })).status).toBe(400);
+    }
+    expect((await post("/api/models", { ...connection, customModelsUrl: "ftp://example.com/models" })).status).toBe(400);
+    expect((await post("/api/models", { ...connection, apiKey: "" })).status).toBe(400);
+    expect((await post("/api/models", { ...connection, apiKey: "bad\nkey" })).status).toBe(400);
+  });
+  it("fetches models using the browser's URL and key without query-string secrets", async () => {
     const realFetch = globalThis.fetch;
     const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      if (String(input).startsWith("https://custom-api.example")) {
-        return new Response(JSON.stringify({ data: [{ id: "custom-a" }, { id: "custom-b" }] }), { status: 200 });
+      if (String(input).startsWith(connection.baseUrl)) {
+        return new Response(JSON.stringify({ data: [{ id: "custom-a" }, { id: "custom-b" }] }));
       }
       return realFetch(input, init);
     });
-    const res = await fetch(`${base}/api/models?url=https://custom-api.example/v1/models`);
+    const res = await post("/api/models", connection);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ models: ["custom-a", "custom-b"] });
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const call = fetcher.mock.calls.find(([input]) => String(input) === `${connection.baseUrl}/models`)!;
+    expect(call[1]?.headers).toMatchObject({ Authorization: "Bearer browser-only-key" });
+    expect(call[1]?.redirect).toBe("manual");
     fetcher.mockRestore();
   });
+  it("forwards the per-request connection, model and thinking to chat", async () => {
+    const realFetch = globalThis.fetch;
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (String(input).startsWith(connection.baseUrl)) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }));
+      }
+      return realFetch(input, init);
+    });
+    const res = await post("/api/agent", { ...connection, model: "chosen-model", reasoningEffort: "high", messages: [{ role: "user", content: "hello" }], project: {} });
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("OK");
+    expect(body).not.toContain(connection.apiKey);
+    const call = fetcher.mock.calls.find(([input]) => String(input) === `${connection.baseUrl}/chat/completions`)!;
+    expect(call[1]?.headers).toMatchObject({ Authorization: "Bearer browser-only-key" });
+    expect(JSON.parse(String(call[1]?.body))).toMatchObject({ model: "chosen-model", reasoning_effort: "high" });
+    fetcher.mockRestore();
+    // Credentials never become a server-wide default for later requests/users.
+    const config = await fetch(`${base}/api/config`);
+    expect(await config.json()).toEqual({ configured: false, model: "gpt-4.1" });
+    expect((await post("/api/agent", { messages: [{ role: "user", content: "hello" }], project: {} })).status).toBe(400);
+  });
+
 });
 
 describe("provider protocol", () => {
@@ -77,7 +111,7 @@ describe("provider protocol", () => {
     expect(url).toBe("https://api.example/v1/chat/completions");
     expect(init?.headers).toMatchObject({ Authorization: "Bearer server-only-secret" });
     expect(String(init?.body)).not.toContain("server-only-secret");
-    expect(JSON.parse(String(init?.body)).tools).toHaveLength(9);
+    expect(JSON.parse(String(init?.body)).tools).toHaveLength(TOOL_DEFINITIONS.length);
     expect(JSON.parse(String(init?.body))).not.toHaveProperty("reasoning_effort");
   });
   it("sends high reasoning effort when configured without changing the model ID", async () => {

@@ -4,6 +4,7 @@ import { parseTool } from "../../shared/tools";
 export interface EditorHandle {
   tool(name: string, args: unknown): Promise<unknown>;
   exportProject(): Promise<Blob>;
+  uploadFile?(file: File): Promise<{ id: string; name: string; size: number }>;
   loadProject(project: Blob): Promise<void>;
 }
 interface Pending { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; expected: string }
@@ -34,6 +35,11 @@ export const ScratchEditor = forwardRef<EditorHandle, { onReady(): void; onError
     async tool(name, args) {
       const validated = parseTool(name, args);
       return request("scratch:tool", "scratch:result", { name, args: validated });
+    },
+    async uploadFile(file) {
+      if (file.size > 50 * 1024 * 1024) throw new Error("File vượt 50 MB.");
+      const buffer = await file.arrayBuffer();
+      return request("scratch:upload", "scratch:uploaded", { name: file.name, file: buffer }, [buffer]) as Promise<{ id: string; name: string; size: number }>;
     },
     async exportProject() {
       const data = await request("scratch:export", "scratch:exported") as ArrayBuffer;

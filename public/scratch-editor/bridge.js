@@ -164,7 +164,7 @@
     window.addEventListener("message", function (event) {
       if (event.origin !== parentOrigin || event.source !== window.parent) return;
       const message = event.data;
-      if (!message || !["scratch:loadProject", "scratch:export", "scratch:tool"].includes(message.type)) return;
+      if (!message || !["scratch:loadProject", "scratch:export", "scratch:tool", "scratch:upload"].includes(message.type)) return;
       if (typeof message.requestId !== "string" || message.requestId.length > 120 || seen.has(message.requestId)) return;
       seen.add(message.requestId);
       if (seen.size > 2000) seen.delete(seen.values().next().value);
@@ -176,15 +176,31 @@
     async function handleMessage(event) {
       const data = event.data;
       if (!data || typeof data !== "object") return;
+      if (data.type === "scratch:upload") {
+        await toolsReady;
+        if (!(data.file instanceof ArrayBuffer) || typeof data.name !== "string") throw new Error("File không hợp lệ.");
+        const result = window.__scratchVibeUpload(data.name, data.file);
+        post({ type: "scratch:uploaded", requestId: data.requestId, result });
+        return;
+      }
       if (data.type === "scratch:tool") {
         await toolsReady;
         const toolVm = await waitForStageTarget(editorState);
         let backup = null;
         try {
-          if (["add_scripts", "replace_scripts", "set_sprite", "duplicate_sprite", "create_variable"].includes(data.name)) {
+          if (window.__scratchVibeMutating(data.name)) {
             backup = await (await toolVm.saveProjectSb3()).arrayBuffer();
           }
-          const result = await window.__scratchVibeExecute(toolVm, data.name, data.args);
+          const result = await window.__scratchVibeExecute(toolVm, data.name, data.args, {
+            async loadProject(bytes) {
+              requestProjectUpload(editorState);
+              try {
+                await toolVm.loadProject(bytes);
+                markProjectLoaded(editorState, true);
+                await waitForStageTarget(editorState);
+              } catch (error) { markProjectLoaded(editorState, false); throw error; }
+            }
+          });
           if (JSON.stringify(result).length > 120000) throw new Error("Kết quả tool quá lớn. Hãy dùng project nhỏ hơn.");
           post({ type: "scratch:result", requestId: data.requestId, result });
         } catch (error) {

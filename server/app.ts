@@ -1,10 +1,11 @@
 import express from "express";
 import { resolve } from "node:path";
 import { chatRequestSchema } from "../shared/chat";
-import { parseModelList } from "../shared/models";
+import { DEFAULT_MODEL, modelListRequestSchema } from "../shared/provider";
+import { requestModels } from "./models";
 import { requestAgent, type ProviderConfig } from "./agent";
 
-export function createApp(options: { config: ProviderConfig; port: number; appOrigin: string; production?: boolean }) {
+export function createApp(options: { port: number; appOrigin: string; production?: boolean }) {
   const app = express();
   app.disable("x-powered-by");
   const origins = new Set([options.appOrigin, `http://127.0.0.1:${options.port}`, `http://localhost:${options.port}`]);
@@ -23,69 +24,24 @@ export function createApp(options: { config: ProviderConfig; port: number; appOr
   app.use(express.json({ limit: "1mb" }));
   app.get("/api/config", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json({
-      configured: Boolean(options.config.apiKey),
-      model: options.config.model,
-      ...(options.config.reasoningEffort ? { reasoningEffort: options.config.reasoningEffort } : {}),
-    });
+    res.json({ configured: false, model: DEFAULT_MODEL });
   });
-  app.get("/api/models", async (req, res) => {
+  app.post("/api/models", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    const rawUrl = typeof req.query.url === "string" ? req.query.url.trim() : "";
-    let targetUrl: URL;
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (rawUrl) {
-      try {
-        targetUrl = new URL(rawUrl);
-        if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
-          res.status(400).json({ error: "URL không hợp lệ. Chỉ chấp nhận HTTP hoặc HTTPS." }); return;
-        }
-      } catch {
-        res.status(400).json({ error: "URL không đúng định dạng." }); return;
-      }
-      try {
-        const base = new URL(options.config.baseUrl);
-        if (targetUrl.host === base.host && options.config.apiKey) {
-          headers.Authorization = `Bearer ${options.config.apiKey}`;
-        }
-      } catch { /* ignore */ }
-    } else {
-      try {
-        targetUrl = new URL(`${options.config.baseUrl.replace(/\/$/, "")}/models`);
-        if (options.config.apiKey) {
-          headers.Authorization = `Bearer ${options.config.apiKey}`;
-        }
-      } catch {
-        res.status(500).json({ error: "Cấu hình OPENAI_BASE_URL không hợp lệ." }); return;
-      }
+    const input = modelListRequestSchema.safeParse(req.body);
+    if (!input.success) {
+      res.status(400).json({ error: "Nhập Custom URL hợp lệ và API key trong Cài đặt AI trên web." }); return;
     }
-    try {
-      const upstream = await fetch(targetUrl.toString(), { headers, signal: AbortSignal.timeout(15000) });
-      if (!upstream.ok) {
-        res.status(502).json({ error: `Provider trả lỗi HTTP ${upstream.status} khi lấy danh sách model.` }); return;
-      }
-      const data = await upstream.json();
-      const models = parseModelList(data);
-      if (!models.length) {
-        res.status(422).json({ error: "Không tìm thấy danh sách model từ phản hồi của URL." }); return;
-      }
-      res.json({ models });
-    } catch (error) {
-      res.status(502).json({
-        error: error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
-          ? "Quá thời gian chờ khi tải danh sách model (15 giây)."
-          : "Không thể kết nối đến URL danh sách model.",
-      });
-    }
+    const result = await requestModels(input.data);
+    res.status(result.status).json(result.body);
   });
   let active = false;
   let requests: number[] = [];
   app.post("/api/agent", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    if (!options.config.apiKey) { res.status(503).json({ error: "Chưa cấu hình OPENAI_API_KEY trong .env ở server." }); return; }
     const input = chatRequestSchema.safeParse(req.body);
     if (!input.success || JSON.stringify(input.data?.project ?? null).length > 80000) {
-      res.status(400).json({ error: "Payload hội thoại không hợp lệ hoặc quá lớn." }); return;
+      res.status(400).json({ error: "Payload không hợp lệ hoặc quá lớn. Kiểm tra Custom URL và API key trong Cài đặt AI trên web." }); return;
     }
     requests = requests.filter(time => time > Date.now() - 60000);
     if (active || requests.length >= 120) { res.status(429).json({ error: "Agent đang bận xử lý yêu cầu khác. Thử lại sau." }); return; }
@@ -95,11 +51,10 @@ export function createApp(options: { config: ProviderConfig; port: number; appOr
     const close = () => { if (!res.writableEnded) controller.abort(); };
     res.on("close", close);
     const effectiveConfig: ProviderConfig = {
-      ...options.config,
-      model: input.data.model?.trim() || options.config.model,
-      reasoningEffort: input.data.reasoningEffort !== undefined
-        ? (input.data.reasoningEffort ?? undefined)
-        : options.config.reasoningEffort,
+      apiKey: input.data.apiKey,
+      baseUrl: input.data.baseUrl,
+      model: input.data.model || DEFAULT_MODEL,
+      reasoningEffort: input.data.reasoningEffort ?? undefined,
     };
 
     const acceptsSSE = req.headers.accept?.includes("text/event-stream");

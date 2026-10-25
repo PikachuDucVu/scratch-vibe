@@ -1,6 +1,7 @@
 import { requestAgent, type ProviderConfig } from "../server/agent";
 import { chatRequestSchema } from "../shared/chat";
-import { parseModelList } from "../shared/models";
+import { DEFAULT_MODEL, modelListRequestSchema } from "../shared/provider";
+import { requestModels } from "../server/models";
 
 export interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
@@ -8,10 +9,6 @@ export interface ExecutionContext {
 }
 
 export interface Env {
-  OPENAI_API_KEY?: string;
-  OPENAI_BASE_URL?: string;
-  OPENAI_MODEL?: string;
-  OPENAI_REASONING_EFFORT?: string;
   ASSETS: {
     fetch: (request: Request) => Promise<Response>;
   };
@@ -32,109 +29,29 @@ export default {
 };
 
 async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
-  const baseUrl = env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
-  const defaultModel = env.OPENAI_MODEL || (baseUrl.includes("ai.ducvu.io.vn") ? "gemini-3.8-flash-high" : "gpt-4.1");
-
-  // GET /api/config
-  if (url.pathname === "/api/config" && request.method === "GET") {
-    return new Response(
-      JSON.stringify({
-        configured: Boolean(env.OPENAI_API_KEY),
-        model: defaultModel,
-        ...(env.OPENAI_REASONING_EFFORT ? { reasoningEffort: env.OPENAI_REASONING_EFFORT } : {}),
-      }),
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "no-store",
-        },
-      }
-    );
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+    status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+  // Credentials are per request, configured only in the web UI.
+  const origin = request.headers.get("origin");
+  if ((origin && origin !== url.origin) || request.headers.get("sec-fetch-site") === "cross-site") {
+    return json({ error: "Origin không được phép." }, 403);
   }
-
-  // GET /api/models
-  if (url.pathname === "/api/models" && request.method === "GET") {
-    const rawUrl = url.searchParams.get("url")?.trim() ?? "";
-    let targetUrl: URL;
-    const headers: Record<string, string> = { Accept: "application/json" };
-
-    if (rawUrl) {
-      try {
-        targetUrl = new URL(rawUrl);
-        if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
-          return new Response(JSON.stringify({ error: "URL không hợp lệ. Phải là HTTP hoặc HTTPS." }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-      } catch {
-        return new Response(JSON.stringify({ error: "URL không đúng định dạng." }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      try {
-        const base = new URL(baseUrl);
-        if (targetUrl.host === base.host && env.OPENAI_API_KEY) {
-          headers.Authorization = `Bearer ${env.OPENAI_API_KEY}`;
-        }
-      } catch { /* ignore */ }
-    } else {
-      try {
-        targetUrl = new URL(`${baseUrl.replace(/\/$/, "")}/models`);
-        if (env.OPENAI_API_KEY) {
-          headers.Authorization = `Bearer ${env.OPENAI_API_KEY}`;
-        }
-      } catch {
-        return new Response(JSON.stringify({ error: "Cấu hình OPENAI_BASE_URL không hợp lệ." }), {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-    }
-
-    try {
-      const upstream = await fetch(targetUrl.toString(), {
-        headers,
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!upstream.ok) {
-        return new Response(JSON.stringify({ error: `Provider trả lỗi HTTP ${upstream.status} khi lấy danh sách model.` }), {
-          status: 502,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      const data = await upstream.json();
-      const models = parseModelList(data);
-      if (!models.length) {
-        return new Response(JSON.stringify({ error: "Không tìm thấy danh sách model từ phản hồi của URL." }), {
-          status: 422,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return new Response(JSON.stringify({ models }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (error) {
-      const msg = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")
-        ? "Quá thời gian chờ khi tải danh sách model (15 giây)."
-        : "Không thể kết nối đến URL danh sách model.";
-      return new Response(JSON.stringify({ error: msg }), {
-        status: 502,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+  if (url.pathname === "/api/config" && request.method === "GET") {
+    return json({ configured: false, model: DEFAULT_MODEL });
+  }
+  if (url.pathname === "/api/models" && request.method === "POST") {
+    let body: unknown;
+    try { body = await request.json(); }
+    catch { return json({ error: "Request JSON không hợp lệ." }, 400); }
+    const input = modelListRequestSchema.safeParse(body);
+    if (!input.success) return json({ error: "Nhập Custom URL hợp lệ và API key trong Cài đặt AI trên web." }, 400);
+    const result = await requestModels(input.data);
+    return json(result.body, result.status);
   }
 
   // POST /api/agent
   if (url.pathname === "/api/agent" && request.method === "POST") {
-    if (!env.OPENAI_API_KEY) {
-      return new Response(JSON.stringify({ error: "Chưa cấu hình OPENAI_API_KEY trên Cloudflare Worker." }), {
-        status: 503,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     let bodyData: unknown;
     try {
       bodyData = await request.json();
@@ -147,19 +64,17 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url:
 
     const input = chatRequestSchema.safeParse(bodyData);
     if (!input.success || JSON.stringify(input.data?.project ?? null).length > 80000) {
-      return new Response(JSON.stringify({ error: "Payload hội thoại không hợp lệ hoặc quá lớn." }), {
+      return new Response(JSON.stringify({ error: "Payload không hợp lệ hoặc quá lớn. Kiểm tra Custom URL và API key trong Cài đặt AI trên web." }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
     }
 
     const effectiveConfig: ProviderConfig = {
-      apiKey: env.OPENAI_API_KEY,
-      baseUrl,
-      model: input.data.model?.trim() || defaultModel,
-      reasoningEffort: input.data.reasoningEffort !== undefined
-        ? (input.data.reasoningEffort ?? undefined)
-        : (env.OPENAI_REASONING_EFFORT as any || undefined),
+      apiKey: input.data.apiKey,
+      baseUrl: input.data.baseUrl,
+      model: input.data.model || DEFAULT_MODEL,
+      reasoningEffort: input.data.reasoningEffort ?? undefined,
     };
 
     const acceptsSSE = request.headers.get("accept")?.includes("text/event-stream");
@@ -175,16 +90,16 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url:
             input.data.messages,
             input.data.project,
             request.signal,
-            delta => {
-              writer.write(encoder.encode(`data: ${JSON.stringify({ type: "delta", delta })}\n\n`));
+            async delta => {
+              await writer.write(encoder.encode(`data: ${JSON.stringify({ type: "delta", delta })}\n\n`));
             }
           );
-          writer.write(encoder.encode(`data: ${JSON.stringify({ type: "done", reply })}\n\n`));
+          await writer.write(encoder.encode(`data: ${JSON.stringify({ type: "done", reply })}\n\n`));
         } catch (error) {
           const msg = error instanceof Error ? error.message : "Không thể kết nối provider.";
-          writer.write(encoder.encode(`data: ${JSON.stringify({ type: "error", error: msg })}\n\n`));
+          await writer.write(encoder.encode(`data: ${JSON.stringify({ type: "error", error: msg })}\n\n`)).catch(() => {});
         } finally {
-          writer.close();
+          await writer.close().catch(() => {});
         }
       })());
 
@@ -204,7 +119,7 @@ async function handleApi(request: Request, env: Env, ctx: ExecutionContext, url:
         request.signal
       );
       return new Response(JSON.stringify(reply), {
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
       });
     } catch (error) {
       return new Response(

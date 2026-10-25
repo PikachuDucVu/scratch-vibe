@@ -27,7 +27,11 @@ export function parseModelList(data: unknown): string[] {
 }
 
 export interface AISettings {
+  baseUrl: string;
+  apiKey: string;
+  rememberApiKey: boolean;
   model: string;
   reasoningEffort: "" | ReasoningEffortOption;
   customModelsUrl: string;
+  models: string[];
 }
