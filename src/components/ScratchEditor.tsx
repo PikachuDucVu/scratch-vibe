@@ -6,15 +6,17 @@ export interface EditorHandle {
   exportProject(): Promise<Blob>;
   uploadFile?(file: File): Promise<{ id: string; name: string; size: number }>;
   loadProject(project: Blob): Promise<void>;
+  // App-only operations (asset import, change inventory, highlighting); never exposed to the model.
+  internal?(op: string, payload: Record<string, unknown>, transfer?: Transferable[]): Promise<unknown>;
 }
 interface Pending { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout>; expected: string }
 
-export const ScratchEditor = forwardRef<EditorHandle, { onReady(): void; onError(message: string): void; locked: boolean; lockLabel?: string }>(function ScratchEditor({ onReady, onError, locked, lockLabel }, ref) {
+export const ScratchEditor = forwardRef<EditorHandle, { onReady(): void; onError(message: string): void; onChange?(): void; locked: boolean; lockLabel?: string; locale?: string }>(function ScratchEditor({ onReady, onError, onChange, locked, lockLabel, locale }, ref) {
   const frame = useRef<HTMLIFrameElement>(null);
   const pending = useRef(new Map<string, Pending>());
   const ready = useRef(false);
-  const callbacks = useRef({ onReady, onError });
-  callbacks.current = { onReady, onError };
+  const callbacks = useRef({ onReady, onError, onChange });
+  callbacks.current = { onReady, onError, onChange };
   const request = useCallback((type: string, expected: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []) => {
     if (!ready.current || !frame.current?.contentWindow) return Promise.reject(new Error("Scratch chưa sẵn sàng."));
     const requestId = crypto.randomUUID();
@@ -41,6 +43,9 @@ export const ScratchEditor = forwardRef<EditorHandle, { onReady(): void; onError
       const buffer = await file.arrayBuffer();
       return request("scratch:upload", "scratch:uploaded", { name: file.name, file: buffer }, [buffer]) as Promise<{ id: string; name: string; size: number }>;
     },
+    async internal(op, payload, transfer = []) {
+      return request("scratch:internal", "scratch:internalResult", { op, payload }, transfer);
+    },
     async exportProject() {
       const data = await request("scratch:export", "scratch:exported") as ArrayBuffer;
       return new Blob([data], { type: "application/x.scratch.sb3" });
@@ -66,6 +71,7 @@ export const ScratchEditor = forwardRef<EditorHandle, { onReady(): void; onError
         callbacks.current.onReady();
         return;
       }
+      if (data.type === "scratch:changed") { callbacks.current.onChange?.(); return; }
       if (data.type === "scratch:error" && data.requestId === "startup" && typeof data.message === "string") {
         callbacks.current.onError(data.message); return;
       }
@@ -88,7 +94,7 @@ export const ScratchEditor = forwardRef<EditorHandle, { onReady(): void; onError
     };
   }, []);
   return <div className="editor-host">
-    <iframe ref={frame} src="/scratch-editor/index.html" title="Trình lập trình Scratch" allow="microphone" inert={locked} tabIndex={locked ? -1 : 0} />
+    <iframe ref={frame} src={`/scratch-editor/index.html${locale && locale !== "vi" ? `?locale=${encodeURIComponent(locale)}` : ""}`} title="Trình lập trình Scratch" allow="microphone" inert={locked} tabIndex={locked ? -1 : 0} />
     {locked && <div className="editor-lock" aria-label="Editor tạm khóa"><span>{lockLabel ?? "Agent đang thao tác · Nhấn Dừng để chỉnh tay"}</span></div>}
   </div>;
 });

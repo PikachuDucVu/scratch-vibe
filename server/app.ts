@@ -4,6 +4,9 @@ import { chatRequestSchema } from "../shared/chat";
 import { DEFAULT_MODEL, modelListRequestSchema } from "../shared/provider";
 import { requestModels } from "./models";
 import { requestAgent, type ProviderConfig } from "./agent";
+import { MEDIA_BODY_LIMIT, proxyMedia } from "./media";
+import { withinNodeLimit } from "../shared/bounds";
+import { Readable } from "node:stream";
 
 export function createApp(options: { port: number; appOrigin: string; production?: boolean }) {
   const app = express();
@@ -21,11 +24,33 @@ export function createApp(options: { port: number; appOrigin: string; production
     }
     next();
   });
+  // Registered before the JSON parser: media bodies pass through to the provider untouched.
+  app.post(/^\/api\/media\/(images\/generations|images\/edits|audio\/speech)$/, express.raw({ type: () => true, limit: MEDIA_BODY_LIMIT }), async (req, res) => {
+    const headers = new Headers();
+    for (const name of ["x-provider-url", "x-provider-key", "content-type", "content-length"]) {
+      const value = req.headers[name];
+      if (typeof value === "string") headers.set(name, value);
+    }
+    const controller = new AbortController();
+    res.on("close", () => { if (!res.writableEnded) controller.abort(); });
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const response = await proxyMedia(req.params[0], headers, async () => new Uint8Array(body).buffer, controller.signal);
+    res.status(response.status);
+    response.headers.forEach((value, name) => res.setHeader(name, value));
+    if (!response.body) { res.end(); return; }
+    Readable.fromWeb(response.body as import("node:stream/web").ReadableStream).on("error", () => res.destroy()).pipe(res);
+  });
   app.use(express.json({ limit: "1mb" }));
+  app.use((req, res, next) => {
+    if (req.method === "POST" && !withinNodeLimit(req.body)) { res.status(413).json({ error: "Request quá phức tạp." }); return; }
+    next();
+  });
   app.get("/api/config", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json({ configured: false, model: DEFAULT_MODEL });
+    // Share links need cloud storage; only the Cloudflare deploy has it.
+    res.json({ configured: false, model: DEFAULT_MODEL, share: false });
   });
+  app.all(/^\/api\/share(\/.*)?$/, (_req, res) => { res.status(501).json({ error: "Chia sẻ chỉ có trên bản deploy Cloudflare." }); });
   app.post("/api/models", async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     const input = modelListRequestSchema.safeParse(req.body);
@@ -55,6 +80,8 @@ export function createApp(options: { port: number; appOrigin: string; production
       baseUrl: input.data.baseUrl,
       model: input.data.model || DEFAULT_MODEL,
       reasoningEffort: input.data.reasoningEffort ?? undefined,
+      mode: input.data.mode,
+      language: input.data.language,
     };
 
     const acceptsSSE = req.headers.accept?.includes("text/event-stream");

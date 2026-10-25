@@ -1,10 +1,24 @@
 import { z } from "zod";
 import type { ToolCall } from "./tools";
 import { providerConnectionSchema } from "./provider";
+// Prefix of the text part that labels images produced by tools (not typed by the user).
+export const TOOL_IMAGE_PREFIX = "[Ảnh từ tool]";
+export const IMAGE_URL_LIMIT = 110000;
+export const imageUrlSchema = z.string().max(IMAGE_URL_LIMIT).regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/);
+// One text part plus up to 3 images (user attachments or one tool image).
 const imageContent = z.array(z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string().min(1).max(6000) }).strict(),
-  z.object({ type: z.literal("image_url"), image_url: z.object({ url: z.string().max(110000).regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/), detail: z.literal("low") }).strict() }).strict(),
-])).min(1).max(2);
+  z.object({ type: z.literal("image_url"), image_url: z.object({ url: imageUrlSchema, detail: z.enum(["low", "high"]) }).strict() }).strict(),
+])).min(1).max(4);
+export type UserContent = string | z.infer<typeof imageContent>;
+export function isToolImage(message: { role: string; content: unknown }) {
+  return message.role === "user" && Array.isArray(message.content) &&
+    message.content[0]?.type === "text" && String(message.content[0].text).startsWith(TOOL_IMAGE_PREFIX);
+}
+// A user turn starts at a message the person wrote: plain text or text + attached images.
+export function isUserTurn(message: { role: string; content: unknown }) {
+  return message.role === "user" && (typeof message.content === "string" || !isToolImage(message));
+}
 const callSchema = z.object({
   id: z.string().min(1).max(120), type: z.literal("function"),
   function: z.object({ name: z.string().min(1).max(80), arguments: z.string().max(100000) }).strict(),
@@ -19,12 +33,19 @@ export interface AgentReply { content: string | null; tool_calls?: ToolCall[] }
 
 export const reasoningEffortSchema = z.enum(["low", "medium", "high"]);
 export type ReasoningEffortOption = z.infer<typeof reasoningEffortSchema>;
+// build: make changes; plan: propose a plan only; explain: read and explain only; teach: small guided steps.
+export const agentModeSchema = z.enum(["build", "plan", "explain", "teach"]);
+export type AgentMode = z.infer<typeof agentModeSchema>;
+export const languageSchema = z.enum(["vi", "en"]);
+export type Language = z.infer<typeof languageSchema>;
 
 export const chatRequestSchema = providerConnectionSchema.extend({
   messages: z.array(messageSchema).min(1).max(100),
   project: z.unknown(),
   model: z.string().trim().min(1).max(200).optional(),
   reasoningEffort: reasoningEffortSchema.nullable().optional(),
+  mode: agentModeSchema.optional(),
+  language: languageSchema.optional(),
 }).strict();
 
 export function validateConversation(messages: ChatMessage[]) {

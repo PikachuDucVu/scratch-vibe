@@ -104,7 +104,8 @@
     }
 
     window.GUI.setAppElement(rootElement);
-    const editorState = new window.GUI.EditorState({ locale: "vi" });
+    const locale = /^[a-z]{2}(-[A-Za-z]{2,4})?$/.test(params.get("locale") || "") ? params.get("locale") : "vi";
+    const editorState = new window.GUI.EditorState({ locale: locale });
     const gui = window.GUI.createStandaloneRoot(editorState, rootElement);
     let readyPosted = false;
     let readyPromise = null;
@@ -151,6 +152,11 @@
       },
       onVmInit: function (vm) {
         installMouseTargetGuard(vm);
+        let changedTimer = null;
+        vm.on("PROJECT_CHANGED", function () {
+          if (changedTimer !== null) return;
+          changedTimer = window.setTimeout(function () { changedTimer = null; post({ type: "scratch:changed" }); }, 1000);
+        });
       },
     });
 
@@ -164,7 +170,7 @@
     window.addEventListener("message", function (event) {
       if (event.origin !== parentOrigin || event.source !== window.parent) return;
       const message = event.data;
-      if (!message || !["scratch:loadProject", "scratch:export", "scratch:tool", "scratch:upload"].includes(message.type)) return;
+      if (!message || !["scratch:loadProject", "scratch:export", "scratch:tool", "scratch:upload", "scratch:internal"].includes(message.type)) return;
       if (typeof message.requestId !== "string" || message.requestId.length > 120 || seen.has(message.requestId)) return;
       seen.add(message.requestId);
       if (seen.size > 2000) seen.delete(seen.values().next().value);
@@ -181,6 +187,16 @@
         if (!(data.file instanceof ArrayBuffer) || typeof data.name !== "string") throw new Error("File không hợp lệ.");
         const result = window.__scratchVibeUpload(data.name, data.file);
         post({ type: "scratch:uploaded", requestId: data.requestId, result });
+        return;
+      }
+      if (data.type === "scratch:internal") {
+        await toolsReady;
+        const internalVm = await waitForStageTarget(editorState);
+        if (typeof data.op !== "string" || !data.payload || typeof data.payload !== "object") throw new Error("Thao tác nội bộ không hợp lệ.");
+        const result = await window.__scratchVibeInternal(internalVm, data.op, data.payload);
+        // Results come from the tools iframe (another realm), so check the tag, not instanceof.
+        const transfer = result && Object.prototype.toString.call(result.bytes) === "[object ArrayBuffer]" ? [result.bytes] : [];
+        post({ type: "scratch:internalResult", requestId: data.requestId, result }, transfer);
         return;
       }
       if (data.type === "scratch:tool") {

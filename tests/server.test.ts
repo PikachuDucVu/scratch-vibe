@@ -19,7 +19,7 @@ afterAll(async () => { await new Promise<void>((resolve, reject) => server.close
 describe("local API boundaries", () => {
   it("reports setup without exposing API credentials", async () => {
     const res = await fetch(`${base}/api/config`);
-    expect(await res.json()).toEqual({ configured: false, model: "gpt-4.1" });
+    expect(await res.json()).toEqual({ configured: false, model: "gpt-4.1", share: false });
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
   it("rejects cross-origin requests", async () => {
@@ -95,7 +95,7 @@ describe("local API boundaries", () => {
     fetcher.mockRestore();
     // Credentials never become a server-wide default for later requests/users.
     const config = await fetch(`${base}/api/config`);
-    expect(await config.json()).toEqual({ configured: false, model: "gpt-4.1" });
+    expect(await config.json()).toEqual({ configured: false, model: "gpt-4.1", share: false });
     expect((await post("/api/agent", { messages: [{ role: "user", content: "hello" }], project: {} })).status).toBe(400);
   });
 

@@ -34,4 +34,16 @@ export interface AISettings {
   reasoningEffort: "" | ReasoningEffortOption;
   customModelsUrl: string;
   models: string[];
+  // Image generation for generate_costume; empty means "pick an image model from the list".
+  imageModel: string;
+  imageQuality: "low" | "medium" | "high";
+  // Text-to-speech for generate_speech; empty means disabled.
+  speechModel: string;
+  speechVoice: string;
+  // 0 = no step limit.
+  maxSteps: number;
+}
+// Best guess at an image model among the provider's models (e.g. gpt-image-2, *-image-*).
+export function guessImageModel(models: string[]) {
+  return models.find(m => /^gpt-image/i.test(m)) ?? models.find(m => /(^|[-_])image([-_]|$)|dall-?e|imagen|flux/i.test(m)) ?? "";
 }

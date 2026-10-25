@@ -22,6 +22,7 @@ export interface VmTarget {
 export interface ScratchVm {
   runtime: {
     targets: VmTarget[]; getTargetForStage(): VmTarget; emitProjectChanged(): void; emit(name: string, ...args: unknown[]): void;
+    glowScript?(topBlockId: string, isGlowing: boolean): void;
     threads: { status: number; target: VmTarget; topBlock: string; updateMonitor?: boolean }[];
     ioDevices: { keyboard: { getKeyIsDown(key: string): boolean }; mouse: { getScratchX(): number; getScratchY(): number; getIsDown(): boolean } };
     monitorBlocks: { _blocks: Record<string, unknown>; createBlock(block: unknown): void; changeBlock(args: unknown, runtime: unknown): void };

@@ -1,7 +1,8 @@
-import { parseTool, type ToolName } from "../../shared/tools";
+import { PROVIDER_TOOLS, parseTool, type ToolName } from "../../shared/tools";
 import { graphTool, descendants, procedures } from "./graph";
 import { assetTool } from "./assets";
 import { fileTool, type ToolServices } from "./files";
+import { mediaTool } from "./media";
 import { originals, findTarget, describe, refresh, paginate, preview, type Invocation, type ScratchVm, type VmTarget, type VmVariable } from "./vm-types";
 export type { ScratchVm, VmTarget } from "./vm-types";
 
@@ -9,12 +10,13 @@ const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 // Must stay below the chat schema's image limit so the agent loop can forward it.
 const IMAGE_LIMIT = 110000;
 // Re-encode to a bounded JPEG; never forward arbitrary renderer/asset URLs to the model.
-async function toJpeg(src: string, width: number, height: number) {
-  const img = new Image(); img.src = src; await img.decode();
+async function toJpeg(src: string | HTMLCanvasElement, width: number, height: number) {
+  let source: CanvasImageSource = src as HTMLCanvasElement;
+  if (typeof src === "string") { const img = new Image(); img.src = src; await img.decode(); source = img; }
   const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
   const context = canvas.getContext("2d")!;
   context.fillStyle = "#ffffff"; context.fillRect(0, 0, width, height); // JPEG has no alpha.
-  context.drawImage(img, 0, 0, width, height);
+  context.drawImage(source, 0, 0, width, height);
   for (const quality of [0.75, 0.6, 0.45, 0.3]) {
     const image = canvas.toDataURL("image/jpeg", quality);
     if (image.length <= IMAGE_LIMIT) return image;
@@ -33,6 +35,95 @@ function runtimeInfo(vm: ScratchVm, offset?: number, limit?: number) {
     clones: paginate(vm.runtime.targets.filter(t => !t.isOriginal && !t.isStage).map(t => ({ id: t.id, name: t.getName(), x: t.x, y: t.y, visible: t.visible })), offset, limit),
     pressedKeys: ["space", "up arrow", "down arrow", "left arrow", "right arrow", ..."abcdefghijklmnopqrstuvwxyz0123456789"].filter(key => vm.runtime.ioDevices.keyboard.getKeyIsDown(key)),
     mouse: { x: vm.runtime.ioDevices.mouse.getScratchX(), y: vm.runtime.ioDevices.mouse.getScratchY(), isDown: vm.runtime.ioDevices.mouse.getIsDown() } };
+}
+function snapshot(vm: ScratchVm) {
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Chụp sân khấu quá thời gian.")), 5000);
+    vm.renderer.requestSnapshot(url => { clearTimeout(timer); resolve(url); }); vm.renderer.draw();
+  });
+}
+const KEY_NAMES: Record<string, string> = { space: " ", "right arrow": "ArrowRight", "left arrow": "ArrowLeft", "up arrow": "ArrowUp", "down arrow": "ArrowDown" };
+function mousePosition(vm: ScratchVm, x: number, y: number) {
+  const canvasWidth = vm.renderer.canvas.clientWidth, canvasHeight = vm.renderer.canvas.clientHeight;
+  if (!canvasWidth || !canvasHeight) throw new Error("Sân khấu chưa hiển thị để giả lập chuột.");
+  return { x: Math.max(0.001, (x / 480 + 0.5) * canvasWidth), y: Math.max(0.001, (0.5 - y / 360) * canvasHeight), canvasWidth, canvasHeight };
+}
+type RecordArgs = Extract<Invocation, { name: "record_run" }>["args"];
+const round = (n: number) => Math.round(n * 10) / 10;
+// Samples the running project over time and builds a contact sheet so a vision model can judge motion.
+async function recordRun(vm: ScratchVm, a: RecordArgs) {
+  const targets = a.targetIds?.length ? a.targetIds.map(id => findTarget(vm, id)) : originals(vm).filter(t => !t.isStage).slice(0, 8);
+  const stage = vm.runtime.getTargetForStage();
+  const variables = [stage, ...targets].flatMap(t => Object.values(t.variables).filter(v => v.type === "").map(v => ({ owner: t, v }))).slice(0, 20);
+  const frameCount = a.frames ?? 4, duration = a.durationMs;
+  const frameTimes = frameCount === 1 ? [duration] : Array.from({ length: frameCount }, (_, i) => Math.round(i * duration / (frameCount - 1)));
+  const read = () => targets.map(t => ({ x: round(t.x), y: round(t.y), d: round(t.direction), c: t.currentCostume, v: t.visible, s: round(t.size) }));
+  const samples: { t: number; targets: ReturnType<typeof read>; vars: unknown[] }[] = [];
+  const frames: { t: number; url: string }[] = [];
+  const pressed = new Set<string>(), timers: ReturnType<typeof setTimeout>[] = [];
+  const release = () => {
+    for (const key of pressed) vm.postIOData("keyboard", { key, isDown: false });
+    pressed.clear();
+  };
+  if (a.greenFlag) vm.greenFlag();
+  const start = performance.now();
+  try {
+    for (const input of a.inputs ?? []) {
+      timers.push(setTimeout(() => {
+        if (input.device === "keyboard") {
+          const key = KEY_NAMES[input.key] ?? input.key;
+          vm.postIOData("keyboard", { key, isDown: true }); pressed.add(key);
+          timers.push(setTimeout(() => { vm.postIOData("keyboard", { key, isDown: false }); pressed.delete(key); }, input.durationMs ?? 150));
+        } else {
+          const mouse = mousePosition(vm, input.x, input.y);
+          vm.postIOData("mouse", { ...mouse, isDown: true });
+          timers.push(setTimeout(() => vm.postIOData("mouse", { ...mouse, isDown: false }), input.durationMs ?? 100));
+        }
+      }, input.atMs));
+    }
+    let nextFrame = 0;
+    for (;;) {
+      const t = Math.round(performance.now() - start);
+      samples.push({ t, targets: read(), vars: variables.map(({ v }) => preview(v.value)) });
+      while (nextFrame < frameTimes.length && t >= frameTimes[nextFrame]) { frames.push({ t, url: await snapshot(vm) }); nextFrame++; }
+      if (t >= duration) break;
+      await delay(Math.min(100, duration - t));
+    }
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    release();
+  }
+  // Contact sheet: up to 3 columns of 240x180 frames, each labeled with its time.
+  const columns = Math.min(3, frames.length), rows = Math.ceil(frames.length / columns);
+  const sheet = document.createElement("canvas"); sheet.width = columns * 240; sheet.height = rows * 180;
+  const ctx = sheet.getContext("2d")!; ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, sheet.width, sheet.height);
+  for (const [i, frame] of frames.entries()) {
+    const img = new Image(); img.src = frame.url; await img.decode();
+    const x = (i % columns) * 240, y = Math.floor(i / columns) * 180;
+    ctx.drawImage(img, x, y, 240, 180);
+    ctx.strokeStyle = "#94a3b8"; ctx.strokeRect(x + 0.5, y + 0.5, 239, 179);
+    ctx.fillStyle = "rgba(15,23,42,.75)"; ctx.fillRect(x + 4, y + 4, 62, 18);
+    ctx.fillStyle = "#ffffff"; ctx.font = "12px sans-serif"; ctx.fillText(`t=${(frame.t / 1000).toFixed(1)}s`, x + 8, y + 17);
+  }
+  const summary = targets.map((t, i) => {
+    const track = samples.map(s => s.targets[i]);
+    let distance = 0, costumeChanges = 0, visibilityChanges = 0;
+    for (let k = 1; k < track.length; k++) {
+      distance += Math.hypot(track[k].x - track[k - 1].x, track[k].y - track[k - 1].y);
+      if (track[k].c !== track[k - 1].c) costumeChanges++;
+      if (track[k].v !== track[k - 1].v) visibilityChanges++;
+    }
+    const xs = track.map(p => p.x), ys = track.map(p => p.y);
+    return { id: t.id, name: t.getName(), start: track[0], end: track.at(-1), minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys), distance: round(distance), costumeChanges, visibilityChanges };
+  });
+  const variableSummary = variables.map(({ owner, v }, i) => {
+    const values = samples.map(s => s.vars[i]);
+    return { id: v.id, name: v.name, owner: owner.getName(), start: values[0], end: values.at(-1), changes: values.filter((value, k) => k > 0 && value !== values[k - 1]).length };
+  });
+  // At most 12 evenly spaced timeline rows keep the result small.
+  const step = Math.max(1, Math.ceil(samples.length / 12));
+  const timeline = samples.filter((_, i) => i % step === 0 || i === samples.length - 1);
+  return { durationMs: duration, frames: frames.map(f => f.t), targets: summary, variables: variableSummary, timeline, image: await toJpeg(sheet, sheet.width, sheet.height), runtime: runtimeInfo(vm) };
 }
 function ownVariable(target: VmTarget, id: string) {
   const variable = target.variables[id]; if (!variable) throw new Error("Biến/list không tồn tại trên target sở hữu.");
@@ -57,8 +148,11 @@ function ensureMonitor(vm: ScratchVm, target: VmTarget, variable: VmVariable) {
 function variableSummary(variable: VmVariable) { return { id: variable.id, name: variable.name, type: variable.type, value: preview(variable.value), length: Array.isArray(variable.value) ? variable.value.length : undefined }; }
 export async function executeVmTool(vm: ScratchVm, name: ToolName, raw: unknown, services: ToolServices = {}): Promise<unknown> {
   const call = { name, args: parseTool(name, raw) } as Invocation;
+  if (PROVIDER_TOOLS.has(name)) throw new Error(`${name} chạy ở app, không chạy trong editor.`);
   const fileResult = await fileTool(vm, call, services); if (fileResult !== undefined) return fileResult;
   const assetResult = await assetTool(vm, call); if (assetResult !== undefined) return assetResult;
+  const mediaResult = await mediaTool(vm, call); if (mediaResult !== undefined) return mediaResult;
+  if (call.name === "record_run") return recordRun(vm, call.args);
   if (call.name === "get_project") {
     const page = paginate(originals(vm).map(describe), call.args.offset, call.args.limit ?? 20);
     return { targets: page.items, total: page.total, nextOffset: page.nextOffset, editingTargetId: vm.editingTarget?.id, extensions: ["pen", "music"].filter(e => vm.extensionManager.isExtensionLoaded(e)) };
@@ -71,10 +165,7 @@ export async function executeVmTool(vm: ScratchVm, name: ToolName, raw: unknown,
   if (call.name === "run_project") { vm.greenFlag(); return { running: true, verified: false }; }
   if (call.name === "stop_project") { vm.stopAll(); return { running: false }; }
   if (call.name === "capture_stage") {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("Chụp sân khấu quá thời gian.")), 5000);
-      vm.renderer.requestSnapshot(url => { clearTimeout(timer); resolve(url); }); vm.renderer.draw();
-    });
+    const dataUrl = await snapshot(vm);
     if (!dataUrl.startsWith("data:image/png;base64,")) throw new Error("Ảnh sân khấu không hợp lệ.");
     return { image: await toJpeg(dataUrl, 480, 360), width: 480, height: 360 };
   }
@@ -83,14 +174,12 @@ export async function executeVmTool(vm: ScratchVm, name: ToolName, raw: unknown,
     if (a.device === "answer") { if (a.text === undefined) throw new Error("answer cần text."); vm.runtime.emit("ANSWER", a.text); }
     else if (a.device === "keyboard") {
       if (!a.key) throw new Error("keyboard cần key.");
-      const key = ({ space: " ", "right arrow": "ArrowRight", "left arrow": "ArrowLeft", "up arrow": "ArrowUp", "down arrow": "ArrowDown" } as Record<string, string>)[a.key] ?? a.key;
+      const key = KEY_NAMES[a.key] ?? a.key;
       try { vm.postIOData("keyboard", { key, isDown: true }); await delay(a.durationMs ?? 100); }
       finally { vm.postIOData("keyboard", { key, isDown: false }); }
     } else {
       if (a.x === undefined || a.y === undefined) throw new Error("mouse cần x/y.");
-      const canvasWidth = vm.renderer.canvas.clientWidth, canvasHeight = vm.renderer.canvas.clientHeight;
-      if (!canvasWidth || !canvasHeight) throw new Error("Sân khấu chưa hiển thị để giả lập chuột.");
-      const mouse = { x: Math.max(0.001, (a.x / 480 + 0.5) * canvasWidth), y: Math.max(0.001, (0.5 - a.y / 360) * canvasHeight), canvasWidth, canvasHeight };
+      const mouse = mousePosition(vm, a.x, a.y);
       try { vm.postIOData("mouse", { ...mouse, isDown: true }); await delay(a.durationMs ?? 100); }
       finally { vm.postIOData("mouse", { ...mouse, isDown: false }); }
     }

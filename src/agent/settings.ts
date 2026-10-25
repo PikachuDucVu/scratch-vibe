@@ -9,6 +9,7 @@ export function defaultSettings(): AISettings {
   return {
     baseUrl: DEFAULT_BASE_URL, apiKey: "", rememberApiKey: false,
     model: DEFAULT_MODEL, reasoningEffort: "", customModelsUrl: "", models: [],
+    imageModel: "", imageQuality: "medium", speechModel: "", speechVoice: "alloy", maxSteps: 0,
   };
 }
 
@@ -17,9 +18,11 @@ export function loadSettings(): AISettings {
   try {
     const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null") as Partial<AISettings> | null;
     if (stored && typeof stored === "object") {
-      for (const key of ["baseUrl", "model", "customModelsUrl"] as const) {
-        if (typeof stored[key] === "string") settings[key] = stored[key];
+      for (const key of ["baseUrl", "model", "customModelsUrl", "imageModel", "speechModel", "speechVoice"] as const) {
+        if (typeof stored[key] === "string") settings[key] = stored[key].slice(0, 2048);
       }
+      if (["low", "medium", "high"].includes(stored.imageQuality ?? "")) settings.imageQuality = stored.imageQuality!;
+      if (Number.isInteger(stored.maxSteps) && stored.maxSteps! >= 0 && stored.maxSteps! <= 500) settings.maxSteps = stored.maxSteps!;
       if (["low", "medium", "high"].includes(stored.reasoningEffort ?? "")) {
         settings.reasoningEffort = stored.reasoningEffort!;
       }
