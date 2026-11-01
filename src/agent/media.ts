@@ -1,20 +1,13 @@
 import { IMAGE_URL_LIMIT } from "../../shared/chat";
 import { guessImageModel, type AISettings } from "../../shared/models";
+import { requestMedia } from "../../shared/media-api";
 import type { EditorHandle } from "../components/ScratchEditor";
 
 type Connection = Pick<AISettings, "baseUrl" | "apiKey">;
 interface TargetInfo { id: string; name: string; isStage: boolean }
 
-async function mediaRequest(path: string, connection: Connection, body: BodyInit, signal: AbortSignal, json = true) {
-  const headers: Record<string, string> = { "X-Provider-Url": connection.baseUrl, "X-Provider-Key": connection.apiKey };
-  if (json) headers["Content-Type"] = "application/json"; // FormData sets its own multipart boundary.
-  const response = await fetch(`/api/media/${path}`, { method: "POST", headers, body, signal });
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new Error((data as { error?: string }).error ?? `Tạo media thất bại (HTTP ${response.status}).`);
-  }
-  return response;
-}
+const mediaRequest = (path: string, connection: Connection, body: string | FormData, signal: AbortSignal) =>
+  requestMedia(path, connection, body, signal);
 
 async function decodeImage(blob: Blob) {
   const url = URL.createObjectURL(blob);
@@ -103,7 +96,7 @@ export async function generateCostume(editor: EditorHandle, settings: AISettings
     form.set("model", model); form.set("prompt", prompt); form.set("size", size); form.set("quality", settings.imageQuality);
     if (!target.isStage) form.set("background", "transparent");
     form.set("image", new Blob([reference.bytes], { type: "image/png" }), "reference.png");
-    response = await mediaRequest("images/edits", settings, form, signal, false);
+    response = await mediaRequest("images/edits", settings, form, signal);
   } else {
     response = await mediaRequest("images/generations", settings, JSON.stringify({
       model, prompt, size, quality: settings.imageQuality, n: 1, ...(target.isStage ? {} : { background: "transparent" }),

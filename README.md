@@ -20,7 +20,7 @@ Mở **http://127.0.0.1:5173**.
 - Chưa có key: vẫn kéo thả Scratch, mở/lưu `.sb3`, và dùng **“Thêm & chạy demo không cần API key”** để kiểm tra tool pipeline.
 - Bật AI: mở **⚙ Cài đặt** trên web, nhập **Custom URL (API Base URL)** và **API key**, tải danh sách model rồi bấm **Lưu & Áp dụng**. Có thể nhập model ID thủ công nếu provider không hỗ trợ liệt kê model.
 - Đổi model ngay bằng **AI Model** bên dưới ô nhập chat. Lựa chọn có hiệu lực từ lượt chat tiếp theo, được lưu cùng cấu hình trên trình duyệt.
-- Custom URL là URL gốc API, ví dụ `https://provider.example/v1`, dùng cho cả `/chat/completions` và `/models`. URL danh sách model riêng là tùy chọn; key chỉ được gửi khi URL này cùng origin (scheme, host và port) với Custom URL. Không tự theo redirect có thể chuyển key sang host khác.
+- Custom URL là URL gốc API, ví dụ `https://provider.example/v1`, dùng cho cả `/chat/completions` và `/models`. URL danh sách model riêng là tùy chọn; key chỉ được gửi khi URL này cùng origin (scheme, host và port) với Custom URL. Không tự theo redirect có thể chuyển key sang host khác. Trình duyệt gọi **thẳng** provider (không qua server của app), nên provider phải bật CORS cho trình duyệt: cho phép origin của app và header `Authorization`/`Content-Type`.
 - Model, URL, danh sách model và mức Thinking được lưu trong trình duyệt. API key mặc định chỉ lưu trong phiên tab (`sessionStorage`, giữ qua tải lại trang); bật **Ghi nhớ API key trên trình duyệt này** để lưu lâu hơn trong `localStorage`. Key được lưu **không mã hóa**, không nên bật ghi nhớ trên máy dùng chung. **Xóa cấu hình** xóa key khỏi cả hai nơi lưu và xóa danh sách model.
 - Không cần sửa `.env`, cấu hình Worker secret hoặc khởi động lại server để bật AI. Các biến môi trường AI cũ không còn được đọc. `.env` chỉ còn tùy chọn cho server local:
 
@@ -46,7 +46,7 @@ Mục **Tạo hình & âm thanh bằng AI** trong Cài đặt: chọn **Model t�
 - **Chia sẻ** (chỉ trên bản Cloudflare): tạo link `/?share=…` để người khác mở project; file `.sb3` lưu 30 ngày trong Workers KV.
 - Hiển thị **số token** của lượt hiện tại nếu provider trả `usage`.
 
-**Không** đặt key trong source code, `VITE_*`, URL hoặc chat. Key được gửi trong body POST cùng origin tới backend và chỉ chuyển tới provider qua Authorization header, không được trả lại trong API response. Request chứa mô tả, tên sprite/biến và block của project; chỉ dùng endpoint bạn tin cậy và không gửi dữ liệu nhạy cảm nếu chưa xem chính sách provider.
+**Không** đặt key trong source code, `VITE_*`, URL hoặc chat. Key chỉ được trình duyệt gửi thẳng tới provider qua header Authorization; server/Worker của app không nhận, không lưu và không thấy key. Request chứa mô tả, tên sprite/biến và block của project; chỉ dùng endpoint bạn tin cậy và không gửi dữ liệu nhạy cảm nếu chưa xem chính sách provider.
 
 ### Chạy bản build
 
@@ -133,10 +133,10 @@ Agent không được thực thi JavaScript tùy ý. Tool nhận DSL JSON, sau �
 
 ```text
 Chat React
-   │ POST /api/agent (cấu hình từ web + hội thoại + live project summary)
+   │ POST {Custom URL}/chat/completions (trình duyệt gọi thẳng provider; key ở header Authorization)
+   │ {Custom URL}/models, /images/*, /audio/speech cũng gọi thẳng
    ▼
-Express / Worker → provider Chat Completions (key theo từng request)
-   │ /api/media/* → provider images/audio (body chuyển nguyên, key ở header)
+Provider Chat Completions
    │ assistant + tool_calls
    ▼
 Agent loop trên browser → validate args → xác nhận thao tác phá hủy
@@ -148,12 +148,12 @@ Scratch editor iframe → bridge tuần tự hóa requests
 Tool result / error → thêm vào hội thoại → model tiếp tục
 ```
 
-Tools runtime có entry riêng `scratch-tools.html`: dùng được cả dev và production mà không sửa bundle Scratch. `scripts/sync-scratch-editor.mjs` sao chép bundle, license notices, blocks media, lazy chunks và static assets từ npm package. Bundle dùng publicPath `/`, nên không thể chỉ sao chép file JS. Scratch CDN assets được proxy qua server với URL/path allowlist cố định.
+Tools runtime có entry riêng `scratch-tools.html`: dùng được cả dev và production mà không sửa bundle Scratch. `scripts/sync-scratch-editor.mjs` sao chép bundle, license notices, blocks media, lazy chunks và static assets từ npm package. Bundle dùng publicPath `/`, nên không thể chỉ sao chép file JS. Scratch CDN assets được proxy qua server với URL/path allowlist cố định. Server/Worker không còn relay chat, danh sách model hay media của provider.
 
 ### An toàn và khôi phục
 
-- API key do người dùng nhập trên web; backend không lưu key dùng chung, không đọc key từ env và không trả key trong response. Không echo upstream error bodies. Key nằm trong browser storage theo lựa chọn của người dùng; không dùng với máy/extension không đáng tin cậy.
-- Server local kiểm tra Host loopback và Origin. Worker public bắt buộc header `Origin` đúng của app cho mọi POST, giới hạn theo IP bằng Cloudflare Rate Limiting (90 request API/phút, 10 request tạo media/phút, 5 lần chia sẻ/phút), giới hạn body (1 MB JSON, 12 MB media, 10 MB chia sẻ) và số node JSON trước khi validate. Không mở CORS tùy ý.
+- API key do người dùng nhập trên web; backend không nhận, không lưu key, không đọc key từ env. Không echo upstream error bodies. Key nằm trong browser storage theo lựa chọn của người dùng; không dùng với máy/extension không đáng tin cậy.
+- Server local kiểm tra Host loopback và Origin. Worker public bắt buộc header `Origin` đúng của app cho mọi POST, giới hạn theo IP bằng Cloudflare Rate Limiting (90 lượt tải link chia sẻ/phút, 5 lần chia sẻ/phút) và giới hạn body 10 MB cho chia sẻ. Không mở CORS tùy ý.
 - Tool name, args, opcode, input, field được kiểm tra; không shell/eval hoặc URL mạng tùy ý do model điều khiển.
 - Stream provider phải có finish_reason hợp lệ và `[DONE]`; lỗi upstream, SSE sai định dạng hoặc ngắt giữa chừng không được thực thi tool. Có giới hạn byte, thời gian chờ, số tool và ID trùng.
 - Compile hoàn chỉnh trước khi chạm VM. Mỗi mutation tool có backup `.sb3`; nếu lỗi, bridge thử khôi phục và báo lỗi. ID có thể đổi sau rollback.

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { routeAgent } from "./provider";
 import { readFile } from "node:fs/promises";
 
 async function rpc(page: Page, type: string, payload: Record<string, unknown> = {}) {
@@ -63,7 +64,7 @@ test("mock provider -> real agent loop -> real VM blocks; rollback invalid scrip
     sessionStorage.setItem("scratch_vibe_api_key", "test-browser-key");
   });
   let step = 0;
-  await page.route("**/api/agent", async route => {
+  await routeAgent(page, async route => {
     const input = route.request().postDataJSON();
     const target = input.project.targets.find((target: { isStage: boolean }) => !target.isStage);
     if (step++ === 0) return route.fulfill({ json: { content: null, tool_calls: [{ id: "tool-add", type: "function", function: { name: "add_scripts", arguments: JSON.stringify({ targetId: target.id, scripts: [[{ opcode: "event_whenflagclicked" }, { opcode: "looks_say", inputs: { MESSAGE: "Agent thật sự đã tạo block" } }]] }) } }] } });

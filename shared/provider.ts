@@ -18,15 +18,19 @@ export const providerUrlSchema = z.string().trim().min(1).max(2048).superRefine(
   }
 }).transform(value => value.replace(/\/+$/, ""));
 
-// Redirects are never followed (the key must not travel elsewhere), so name the target instead.
+// Redirects are never followed (a POST would be replayed as GET), so name the target instead.
+// Browsers hide the status and Location of a manual redirect (status 0), so those parts are optional.
 export function providerRedirectMessage(status: number, location: string | null, requestUrl: string) {
   let target = "";
   try {
     const url = new URL(location ?? "", requestUrl);
     target = ` tới ${url.origin}${url.pathname}`;
   } catch { /* Keep the generic message when Location is missing or invalid. */ }
-  return `Provider chuyển hướng HTTP ${status}${target}. Đặt Custom URL đúng địa chỉ đích (HTTPS, không thêm / ở cuối).`;
+  return `Provider chuyển hướng${status ? ` HTTP ${status}` : ""}${location ? target : ""}. Đặt Custom URL đúng địa chỉ đích (HTTPS, không thêm / ở cuối).`;
 }
+
+// fetch() only reports "Failed to fetch" for DNS, TLS, offline and CORS failures alike.
+export const PROVIDER_UNREACHABLE = "Không kết nối được provider. Kiểm tra Custom URL, mạng và việc provider đã bật CORS cho trình duyệt (Access-Control-Allow-Origin, Authorization).";
 
 export const providerConnectionSchema = z.object({
   baseUrl: providerUrlSchema,

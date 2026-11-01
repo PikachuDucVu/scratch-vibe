@@ -1,19 +1,23 @@
 import { test, expect } from "@playwright/test";
+import { CORS, corsJson, routeAgent } from "./provider";
 
 test("configure URL/key on the web, select a model below chat, persist and reset", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.route("**/api/models", async route => {
-    expect(route.request().method()).toBe("POST");
+  // The browser calls the provider directly: the trailing slashes are normalized and the key travels only in the header.
+  await page.route("https://custom.example/v1/models", async route => {
+    if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: CORS });
+    expect(route.request().method()).toBe("GET");
     expect(route.request().url()).not.toContain("web-test-key");
-    expect(route.request().postDataJSON()).toMatchObject({ baseUrl: "https://custom.example/v1", apiKey: "web-test-key" });
-    return route.fulfill({ json: { models: ["custom-small", "custom-large"] } });
+    expect(route.request().headers()["authorization"]).toBe("Bearer web-test-key");
+    return corsJson(route, { data: [{ id: "custom-small" }, { id: "custom-large" }] });
   });
   let chatRequests = 0;
-  await page.route("**/api/agent", async route => {
-    expect(route.request().postDataJSON()).toMatchObject({
-      baseUrl: "https://custom.example/v1", apiKey: "web-test-key", model: "custom-large", reasoningEffort: "high",
-    });
+  await routeAgent(page, async route => {
+    const input = route.request().postDataJSON();
+    expect(input.url).toBe("https://custom.example/v1/chat/completions");
+    expect(input.headers["authorization"]).toBe("Bearer web-test-key");
+    expect(input).toMatchObject({ model: "custom-large", reasoning_effort: "high" });
     chatRequests++;
     return route.fulfill({ json: { content: "Đã dùng đúng cấu hình web." } });
   });

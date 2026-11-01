@@ -1,9 +1,11 @@
-import { sseData } from "../../shared/sse";
-import { isToolImage, isUserTurn, messageSchema, TOOL_IMAGE_PREFIX, type AgentMode, type AgentReply, type ChatMessage, type Language, type ReasoningEffortOption, type UserContent } from "../../shared/chat";
-import { parseModelList } from "../../shared/models";
+import { isToolImage, isUserTurn, TOOL_IMAGE_PREFIX, type AgentMode, type ChatMessage, type Language, type ReasoningEffortOption, type UserContent } from "../../shared/chat";
+import { requestAgent } from "../../shared/agent";
+import { requestModels } from "../../shared/provider-api";
 import { MUTATING_TOOLS, PROVIDER_TOOLS, READ_ONLY_TOOLS, parseTool, requiresConfirmation, type ToolName } from "../../shared/tools";
 import type { EditorHandle } from "../components/ScratchEditor";
-import type { ProviderConnection } from "../../shared/provider";
+import { DEFAULT_MODEL, modelListRequestSchema, providerConnectionSchema, type ProviderConnection } from "../../shared/provider";
+
+const CONNECTION_REQUIRED = "Nhập Custom URL hợp lệ và API key trong Cài đặt AI trên web.";
 
 export interface ToolEvent { id: string; name: string; status: "running" | "success" | "error"; detail?: string }
 export interface TokenUsage { promptTokens: number; completionTokens: number; totalTokens: number }
@@ -18,15 +20,12 @@ export interface AgentCallOptions {
 }
 
 export async function fetchModelList(config: ProviderConnection & { customModelsUrl?: string }, signal?: AbortSignal): Promise<string[]> {
-  const response = await fetch("/api/models", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(config), signal,
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error ?? "Không thể tải danh sách model.");
-  const models = parseModelList(data);
-  if (!models.length) throw new Error("Không tìm thấy danh sách model.");
-  return models;
+  const parsed = modelListRequestSchema.safeParse(config);
+  if (!parsed.success) throw new Error(CONNECTION_REQUIRED);
+  const result = await requestModels(parsed.data, signal);
+  const body = result.body as { models?: string[]; error?: string };
+  if (result.status !== 200 || !body.models) throw new Error(body.error ?? "Không thể tải danh sách model.");
+  return body.models;
 }
 
 export function trimHistory(history: ChatMessage[]) {
@@ -84,50 +83,17 @@ const IMAGE_TOOLS: Record<string, { label: string; detail: "low" | "high" }> = {
 };
 
 export async function fetchReply(messages: ChatMessage[], project: unknown, signal: AbortSignal, agentConfig?: AgentCallOptions) {
-  const body: Record<string, unknown> = { messages, project };
-  if (agentConfig?.baseUrl) body.baseUrl = agentConfig.baseUrl;
-  if (agentConfig?.apiKey) body.apiKey = agentConfig.apiKey;
-  if (agentConfig?.model) body.model = agentConfig.model;
-  if (agentConfig?.reasoningEffort !== undefined) body.reasoningEffort = agentConfig.reasoningEffort;
-  if (agentConfig?.mode && agentConfig.mode !== "build") body.mode = agentConfig.mode;
-  if (agentConfig?.language && agentConfig.language !== "vi") body.language = agentConfig.language;
-  const response = await fetch("/api/agent", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "text/event-stream, application/json",
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (response.ok && contentType.includes("text/event-stream") && response.body) {
-    let finalReply: AgentReply | null = null;
-    let streamError: string | null = null;
-    for await (const payload of sseData(response.body)) {
-      let event;
-      try { event = JSON.parse(payload); } catch { throw new Error("Agent gửi sự kiện JSON không hợp lệ."); }
-      if (event.type === "delta") agentConfig?.onDelta?.(event.delta);
-      else if (event.type === "done") {
-        if (finalReply) throw new Error("Agent gửi kết quả trùng.");
-        finalReply = event.reply;
-      } else if (event.type === "error") streamError = event.error;
-      else throw new Error("Sự kiện agent không hợp lệ.");
-    }
-
-    if (streamError) throw new Error(streamError);
-    if (!finalReply) throw new Error("Không nhận được phản hồi hoàn chỉnh từ agent.");
-    const reply = messageSchema.parse({ role: "assistant", ...finalReply });
-    if (reply.role !== "assistant") throw new Error("Phản hồi agent không hợp lệ.");
-    return reply;
-  }
-
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error ?? "Không kết nối được agent.");
-  const reply = messageSchema.parse({ role: "assistant", ...data });
-  if (reply.role !== "assistant") throw new Error("Phản hồi agent không hợp lệ.");
-  return reply;
+  // The browser talks to the provider directly; the key never passes through this app's servers.
+  const connection = providerConnectionSchema.safeParse({ baseUrl: agentConfig?.baseUrl ?? "", apiKey: agentConfig?.apiKey ?? "" });
+  if (!connection.success) throw new Error(CONNECTION_REQUIRED);
+  const onDelta = agentConfig?.onDelta ?? (() => {});
+  return requestAgent({
+    ...connection.data,
+    model: agentConfig?.model || DEFAULT_MODEL,
+    reasoningEffort: agentConfig?.reasoningEffort ?? undefined,
+    mode: agentConfig?.mode,
+    language: agentConfig?.language,
+  }, messages, project, signal, onDelta);
 }
 
 // Same tool with the same arguments this many times in a row is treated as a loop.

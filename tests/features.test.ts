@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { diffInventory, type Inventory } from "../src/agent/changes";
-import { fetchWithRetry, systemPrompt } from "../server/agent";
+import { fetchWithRetry, systemPrompt } from "../shared/agent";
 import { guessImageModel } from "../shared/models";
 
 const text = { stage: "Sân khấu", added: "Sprite mới", removed: "Đã xóa", blocks: "block", changedBlocks: "block sửa", removedBlocks: "block", variables: "biến", costumes: "costume", sounds: "âm thanh", renamed: "đổi tên từ" };

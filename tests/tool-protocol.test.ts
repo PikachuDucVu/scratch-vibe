@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import Ajv from "ajv";
 import { TOOL_DEFINITIONS, parseTool, requiresConfirmation } from "../shared/tools";
-import { requestAgent } from "../server/agent";
+import { requestAgent } from "../shared/agent";
 import { sseData } from "../shared/sse";
 const config = { apiKey: "mock-key", model: "mock", baseUrl: "https://mock.invalid/v1" };
 const messages = [{ role: "user" as const, content: "test" }];

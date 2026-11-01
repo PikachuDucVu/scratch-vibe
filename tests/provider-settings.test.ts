@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings, loadSettings, saveSettings } from "../src/agent/settings";
 import { fetchModelList, fetchReply } from "../src/agent/loop";
 import { providerConnectionSchema } from "../shared/provider";
-import { requestModels } from "../server/models";
+import { requestModels } from "../shared/provider-api";
 
 function memoryStorage() {
   const data = new Map<string, string>();
@@ -73,21 +73,47 @@ describe("browser AI settings", () => {
 });
 
 describe("browser provider requests", () => {
-  it("posts model credentials in the JSON body, never URL parameters", async () => {
-    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ models: ["a", "a", "b"] })));
+  it("lists models straight from the provider with the key only in the Authorization header", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: [{ id: "a" }, { id: "a" }, { id: "b" }] })));
     expect(await fetchModelList(connection)).toEqual(["a", "b"]);
-    expect(fetcher).toHaveBeenCalledWith("/api/models", expect.objectContaining({ method: "POST", body: JSON.stringify(connection) }));
+    const [url, init] = fetcher.mock.calls[0];
+    expect(String(url)).toBe(`${connection.baseUrl}/models`);
+    expect(String(url)).not.toContain(connection.apiKey);
+    expect(init?.headers).toMatchObject({ Authorization: `Bearer ${connection.apiKey}` });
   });
-  it("does not bypass backend validation with a direct client fetch", async () => {
-    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: "invalid" }), { status: 400 }));
-    await expect(fetchModelList(connection)).rejects.toThrow("invalid");
-    expect(fetcher).toHaveBeenCalledTimes(1);
+  it("validates the connection before any request", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch");
+    await expect(fetchModelList({ ...connection, baseUrl: "http://remote.example/v1" })).rejects.toThrow("Custom URL");
+    await expect(fetchModelList({ ...connection, apiKey: "" })).rejects.toThrow("API key");
+    expect(fetcher).not.toHaveBeenCalled();
   });
-  it("includes the selected model and connection in chat requests", async () => {
-    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ content: "OK" }), { headers: { "Content-Type": "application/json" } }));
-    await fetchReply([{ role: "user", content: "hello" }], {}, new AbortController().signal, { ...connection, model: "selected-model", reasoningEffort: null });
-    expect(fetcher.mock.calls[0][0]).toBe("/api/agent");
-    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toMatchObject({ ...connection, model: "selected-model", reasoningEffort: null });
+  it("reports provider errors from the model list", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 401 }));
+    await expect(fetchModelList(connection)).rejects.toThrow("HTTP 401");
+  });
+  it("explains CORS/network failures instead of a bare 'Failed to fetch'", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+    await expect(fetchModelList(connection)).rejects.toThrow("CORS");
+  });
+  it("sends the selected model and thinking level straight to the provider", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "OK" }, finish_reason: "stop" }] }), { headers: { "Content-Type": "application/json" } }));
+    const reply = await fetchReply([{ role: "user", content: "hello" }], {}, new AbortController().signal, { ...connection, model: "selected-model", reasoningEffort: "high" });
+    expect(reply.content).toBe("OK");
+    const [url, init] = fetcher.mock.calls[0];
+    expect(String(url)).toBe(`${connection.baseUrl}/chat/completions`);
+    expect(init?.headers).toMatchObject({ Authorization: `Bearer ${connection.apiKey}` });
+    expect(JSON.parse(String(init?.body))).toMatchObject({ model: "selected-model", reasoning_effort: "high" });
+    expect(String(init?.body)).not.toContain(connection.apiKey);
+  });
+  it("refuses to chat without a valid connection", async () => {
+    const fetcher = vi.spyOn(globalThis, "fetch");
+    await expect(fetchReply([{ role: "user", content: "hello" }], {}, new AbortController().signal, { model: "m" })).rejects.toThrow("Cài đặt AI");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("names the target of a redirect (browsers hide it behind an opaque redirect)", async () => {
+    const opaque = { type: "opaqueredirect", status: 0, ok: false, headers: new Headers(), body: null } as unknown as Response;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(opaque);
+    await expect(fetchReply([{ role: "user", content: "hello" }], {}, new AbortController().signal, { ...connection, model: "m" })).rejects.toThrow(/chuyển hướng/);
   });
 });
 

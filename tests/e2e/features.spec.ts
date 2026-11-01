@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { corsJson, routeAgent } from "./provider";
 
 async function tool(page: Page, name: string, args: unknown = {}): Promise<any> {
   return page.evaluate(async ({ name, args }) => {
@@ -34,7 +35,7 @@ async function configureAi(page: Page) {
     localStorage.setItem("scratch_vibe_api_key", "e2e-key");
   });
 }
-const json = (route: Route, body: unknown) => route.fulfill({ json: body });
+const json = (route: { fulfill(options: { json: any }): unknown }, body: unknown) => route.fulfill({ json: body });
 
 test("edit_costume flips/tints real pixels; sounds are synthesized and edited", async ({ page }) => {
   const { cat } = await start(page);
@@ -89,12 +90,12 @@ test("AI costume generation: provider image → background removed, cropped, add
     return c.toDataURL("image/png").split(",")[1];
   });
   let mediaRequest: any;
-  await page.route("**/api/media/images/generations", async route => {
+  await page.route("https://provider.example/v1/images/generations", async route => {
     mediaRequest = { headers: route.request().headers(), body: route.request().postDataJSON() };
-    return json(route, { data: [{ b64_json: png }] });
+    return corsJson(route, { data: [{ b64_json: png }] });
   });
   let step = 0, sawPreview = false;
-  await page.route("**/api/agent", async route => {
+  await routeAgent(page, async route => {
     const input = route.request().postDataJSON();
     if (step++ === 0) return json(route, { content: null, tool_calls: [{ id: "gen", type: "function", function: { name: "generate_costume", arguments: JSON.stringify({ targetId: cat.id, prompt: "hộp đỏ", name: "hộp đỏ", size: 50 }) } }] });
     sawPreview = input.messages.some((m: any) => Array.isArray(m.content) && m.content[1]?.image_url?.url?.startsWith("data:image/jpeg"));
@@ -103,8 +104,7 @@ test("AI costume generation: provider image → background removed, cropped, add
   await page.getByLabel("Mô tả yêu cầu lập trình Scratch").fill("Vẽ một hộp đỏ.");
   await page.getByRole("button", { name: "Tạo với AI" }).click();
   await expect(page.getByText("Đã vẽ hộp đỏ.", { exact: true })).toBeVisible();
-  expect(mediaRequest.headers["x-provider-url"]).toBe("https://provider.example/v1");
-  expect(mediaRequest.headers["x-provider-key"]).toBe("e2e-key");
+  expect(mediaRequest.headers["authorization"]).toBe("Bearer e2e-key");
   expect(mediaRequest.body).toMatchObject({ model: "gpt-image-2", quality: "low", background: "transparent" });
   expect(mediaRequest.body.prompt).toContain("hộp đỏ");
   expect(sawPreview).toBe(true);
@@ -123,7 +123,7 @@ test("per-step undo, change summary and plan mode", async ({ page }) => {
   const { cat } = await start(page);
   let step = 0;
   const bodies: any[] = [];
-  await page.route("**/api/agent", async route => {
+  await routeAgent(page, async route => {
     const input = route.request().postDataJSON(); bodies.push(input);
     const add = (id: string) => ({ id, type: "function", function: { name: "add_scripts", arguments: JSON.stringify({ targetId: input.project.targets.find((t: any) => !t.isStage).id, scripts: [[{ opcode: "event_whenflagclicked" }, { opcode: "looks_say", inputs: { MESSAGE: id } }]] }) } });
     const n = step++;
@@ -155,11 +155,11 @@ test("per-step undo, change summary and plan mode", async ({ page }) => {
   await page.getByLabel("Mô tả yêu cầu lập trình Scratch").fill("Lập kế hoạch thêm script chào.");
   await page.getByRole("button", { name: "Tạo với AI" }).click();
   await expect(page.getByText("Kế hoạch: 1. Thêm script chào.", { exact: true })).toBeVisible();
-  expect(bodies[3].mode).toBe("plan");
+  expect(bodies[3].system).toContain("CHẾ ĐỘ LẬP KẾ HOẠCH");
   expect(await count()).toBe(0); // the blocked edit never ran
   await page.getByRole("button", { name: "▶ Thực hiện kế hoạch này" }).click();
   await expect(page.getByText("Đã thực hiện kế hoạch.", { exact: true })).toBeVisible();
-  expect(bodies.at(-1).mode).toBeUndefined();
+  expect(bodies.at(-1).system).not.toContain("CHẾ ĐỘ LẬP KẾ HOẠCH");
   // The undo note keeps the conversation instead of wiping it.
   expect(bodies.at(-1).messages.some((m: any) => typeof m.content === "string" && m.content.includes("hoàn tác"))).toBe(true);
   void cat;
@@ -169,7 +169,7 @@ test("autosave survives a reload; conversations are kept; image attachments reac
   await configureAi(page);
   await start(page);
   let agentBody: any;
-  await page.route("**/api/agent", async route => { agentBody = route.request().postDataJSON(); return json(route, { content: "Đã xem ảnh của bạn." }); });
+  await routeAgent(page, async route => { agentBody = route.request().postDataJSON(); return json(route, { content: "Đã xem ảnh của bạn." }); });
   await page.locator('input[type="file"][accept^="image/"]').setInputFiles({ name: "sketch.png", mimeType: "image/png", buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64") });
   await expect(page.locator(".attachment img")).toHaveCount(1);
   await page.getByLabel("Mô tả yêu cầu lập trình Scratch").fill("Làm giống ảnh này");

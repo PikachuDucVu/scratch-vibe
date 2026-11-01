@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { routeAgent } from "./provider";
 import { readFile } from "node:fs/promises";
 import type { VmBlock } from "../../shared/compiler";
 async function tool(page: Page, name: string, args: unknown = {}): Promise<any> {
@@ -227,7 +228,7 @@ test("agent UI confirms destructive tools, displays captures and forwards vision
     sessionStorage.setItem("scratch_vibe_api_key", "mock-key");
   });
   let step = 0;
-  await page.route("**/api/agent", async route => {
+  await routeAgent(page, async route => {
     const input = route.request().postDataJSON();
     const cat = input.project.targets.find((t: any) => !t.isStage);
     if (step++ === 0) return route.fulfill({ json: { content: null, tool_calls: [{ id: "capture", type: "function", function: { name: "capture_stage", arguments: "{}" } }] } });

@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { ToolCall } from "./tools";
-import { providerConnectionSchema } from "./provider";
 // Prefix of the text part that labels images produced by tools (not typed by the user).
 export const TOOL_IMAGE_PREFIX = "[Ảnh từ tool]";
 export const IMAGE_URL_LIMIT = 110000;
@@ -38,15 +37,6 @@ export const agentModeSchema = z.enum(["build", "plan", "explain", "teach"]);
 export type AgentMode = z.infer<typeof agentModeSchema>;
 export const languageSchema = z.enum(["vi", "en"]);
 export type Language = z.infer<typeof languageSchema>;
-
-export const chatRequestSchema = providerConnectionSchema.extend({
-  messages: z.array(messageSchema).min(1).max(100),
-  project: z.unknown(),
-  model: z.string().trim().min(1).max(200).optional(),
-  reasoningEffort: reasoningEffortSchema.nullable().optional(),
-  mode: agentModeSchema.optional(),
-  language: languageSchema.optional(),
-}).strict();
 
 export function validateConversation(messages: ChatMessage[]) {
   const pending = new Set<string>();
