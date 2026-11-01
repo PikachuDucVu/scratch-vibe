@@ -18,6 +18,16 @@ export const providerUrlSchema = z.string().trim().min(1).max(2048).superRefine(
   }
 }).transform(value => value.replace(/\/+$/, ""));
 
+// Redirects are never followed (the key must not travel elsewhere), so name the target instead.
+export function providerRedirectMessage(status: number, location: string | null, requestUrl: string) {
+  let target = "";
+  try {
+    const url = new URL(location ?? "", requestUrl);
+    target = ` tới ${url.origin}${url.pathname}`;
+  } catch { /* Keep the generic message when Location is missing or invalid. */ }
+  return `Provider chuyển hướng HTTP ${status}${target}. Đặt Custom URL đúng địa chỉ đích (HTTPS, không thêm / ở cuối).`;
+}
+
 export const providerConnectionSchema = z.object({
   baseUrl: providerUrlSchema,
   apiKey: z.string().trim().min(1, "Nhập API key trong Cài đặt AI trên web.").max(4096).regex(/^[^\s\u0000-\u001f\u007f]+$/, "API key không hợp lệ."),

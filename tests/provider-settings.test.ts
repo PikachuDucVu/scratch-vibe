@@ -107,6 +107,12 @@ describe("model-list credential boundaries", () => {
     expect(result.status).toBe(502);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+  it("names the redirect target in the error instead of a bare status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 301, headers: { Location: "https://ai.ducvu.io.vn/v1?ignored=1" } }));
+    const result = await requestModels(connection);
+    expect(result.status).toBe(502);
+    expect(result.body).toEqual({ error: expect.stringContaining("HTTP 301 tới https://ai.ducvu.io.vn/v1.") });
+  });
   it("authenticates a custom model-list endpoint on the same origin", async () => {
     const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('["private-model"]'));
     await requestModels({ ...connection, customModelsUrl: "https://custom.example/catalog" });

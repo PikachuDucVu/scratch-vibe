@@ -2,6 +2,7 @@ import { sseData } from "../shared/sse";
 import { catalogHelp } from "../shared/catalog";
 import { TOOL_DEFINITIONS } from "../shared/tools";
 import { messageSchema, validateConversation, type AgentMode, type ChatMessage, type Language } from "../shared/chat";
+import { providerRedirectMessage } from "../shared/provider";
 
 export type ReasoningEffort = "low" | "medium" | "high";
 export interface ProviderConfig { apiKey: string; model: string; baseUrl: string; reasoningEffort?: ReasoningEffort; mode?: AgentMode; language?: Language }
@@ -90,7 +91,8 @@ export async function requestAgent(
   const timeout = setTimeout(abort, 180000);
   try {
     const shouldStream = Boolean(onDelta);
-    const response = await fetchWithRetry(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const endpoint = `${config.baseUrl.replace(/\/$/, "")}/chat/completions`;
+    const response = await fetchWithRetry(endpoint, {
       // Workers reject redirect:"error"; "manual" returns 3xx, which !response.ok rejects below.
       method: "POST", signal: controller.signal, redirect: "manual",
       headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
@@ -110,6 +112,7 @@ export async function requestAgent(
     });
     if (!response.ok) {
       // Do not echo upstream bodies: gateways may include sensitive data.
+      if (response.status >= 300 && response.status < 400) throw new Error(providerRedirectMessage(response.status, response.headers.get("location"), endpoint));
       if (response.status === 401 || response.status === 403) throw new Error("Provider từ chối API key. Kiểm tra Cài đặt AI trên web.");
       if (response.status === 429) throw new Error("Provider đã giới hạn yêu cầu hoặc hết quota. Thử lại sau.");
       throw new Error(`Provider trả lỗi HTTP ${response.status}. Kiểm tra model và Custom URL trong Cài đặt AI.`);

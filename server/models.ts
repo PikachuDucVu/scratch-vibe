@@ -1,5 +1,5 @@
 import { parseModelList } from "../shared/models";
-import type { modelListRequestSchema } from "../shared/provider";
+import { providerRedirectMessage, type modelListRequestSchema } from "../shared/provider";
 import type { z } from "zod";
 
 export async function requestModels(config: z.infer<typeof modelListRequestSchema>) {
@@ -14,6 +14,9 @@ export async function requestModels(config: z.infer<typeof modelListRequestSchem
       // Workers reject redirect:"error"; "manual" returns 3xx, which !ok rejects below.
       headers, redirect: "manual", signal: AbortSignal.timeout(15000),
     });
+    if (upstream.status >= 300 && upstream.status < 400) {
+      return { status: 502, body: { error: providerRedirectMessage(upstream.status, upstream.headers.get("location"), target.toString()) } };
+    }
     if (!upstream.ok) {
       return { status: 502, body: { error: `Provider trả lỗi HTTP ${upstream.status} khi lấy danh sách model.` } };
     }
