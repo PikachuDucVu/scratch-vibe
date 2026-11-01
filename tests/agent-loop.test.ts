@@ -151,6 +151,39 @@ describe("loop safety, modes and media", () => {
     expect(vi.mocked(h.editor.tool).mock.calls.filter(([name]) => name === "set_sprite")).toHaveLength(2);
     expect(() => validateConversation(h.history)).not.toThrow();
   });
+  it("catches a model cycling through the same reads and tells it to act on each image", async () => {
+    const h = harness();
+    vi.mocked(h.editor.tool).mockImplementation(async name => name === "get_costume_image" ? { index: 0, image: "data:image/jpeg;base64,AAAA" } : { targets: [] });
+    // Costume 0, 1, 2, then 0 again: no two consecutive calls are equal, so only the per-turn count can catch it.
+    const order = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0];
+    let n = 0;
+    const reply = vi.fn().mockImplementation(async () => ({ role: "assistant", content: null, tool_calls: [call(`c${n}`, "get_costume_image", { targetId: "cat", index: order[n++] })] }));
+    await expect(runAgent({ ...h.options, reply })).rejects.toThrow(/đọc cùng một dữ liệu/);
+    const views = vi.mocked(h.editor.tool).mock.calls.filter(([name]) => name === "get_costume_image");
+    expect(views).toHaveLength(6); // each costume at most twice
+    expect(h.history.filter(m => m.role === "tool" && m.content.includes("hành động NGAY")).length).toBeGreaterThan(0);
+    expect(() => validateConversation(h.history)).not.toThrow();
+  });
+  it("lets the model view each image once and rename it right away", async () => {
+    const h = harness();
+    vi.mocked(h.editor.tool).mockImplementation(async name => name === "get_costume_image" ? { index: 0, image: "data:image/jpeg;base64,AAAA" } : { ok: true });
+    const steps = [0, 1, 2].flatMap(index => [call(`v${index}`, "get_costume_image", { index, targetId: "cat" }), call(`m${index}`, "manage_asset", { targetId: "cat", kind: "costume", index, action: "rename", name: `n${index}` })]);
+    const reply = vi.fn();
+    for (const c of steps) reply.mockResolvedValueOnce({ role: "assistant", content: null, tool_calls: [c] });
+    reply.mockResolvedValueOnce({ role: "assistant", content: "Đã đổi tên." });
+    await expect(runAgent({ ...h.options, reply })).resolves.toBe("Đã đổi tên.");
+    expect(vi.mocked(h.editor.tool).mock.calls.filter(([name]) => name === "manage_asset")).toHaveLength(3);
+  });
+  it("counts a re-read after a change as new information", async () => {
+    const h = harness();
+    const same = { targetId: "cat", kind: "costume" as const };
+    const steps = [call("g1", "get_assets", same), call("g2", "get_assets", same), call("set", "set_sprite", { targetId: "cat", x: 1 }), call("g3", "get_assets", same), call("g4", "get_assets", same)];
+    const reply = vi.fn();
+    for (const c of steps) reply.mockResolvedValueOnce({ role: "assistant", content: null, tool_calls: [c] });
+    reply.mockResolvedValueOnce({ role: "assistant", content: "Xong." });
+    await expect(runAgent({ ...h.options, reply })).resolves.toBe("Xong.");
+    expect(h.events.some(event => event.status === "error")).toBe(false);
+  });
   it("honors a user-set step limit", async () => {
     const h = harness();
     let n = 0;

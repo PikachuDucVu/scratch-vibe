@@ -46,7 +46,7 @@ const overBudget = (messages: ChatMessage[]) => messages.length > MAX_MESSAGES |
 // Replaces a message's images with a note, keeping any text the user typed.
 function withoutImages(m: ChatMessage): ChatMessage {
   if (m.role !== "user" || !Array.isArray(m.content)) return m;
-  if (isToolImage(m)) return { role: "user", content: "[Ảnh cũ đã được lược bỏ để tiết kiệm context.]" };
+  if (isToolImage(m)) return { role: "user", content: "[Ảnh cũ đã được lược bỏ để tiết kiệm context. Bạn đã xem ảnh này rồi: đừng xem lại, hãy hành động theo những gì đã quan sát hoặc dùng get_assets.]" };
   const text = m.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
   return { role: "user", content: `${text || "(ảnh)"}\n[Ảnh đính kèm đã được lược bỏ để tiết kiệm context.]` };
 }
@@ -98,6 +98,17 @@ export async function fetchReply(messages: ChatMessage[], project: unknown, sign
 
 // Same tool with the same arguments this many times in a row is treated as a loop.
 const REPEAT_LIMIT = 3, READ_REPEAT_LIMIT = 5, BLOCKED_LIMIT = 3;
+// Pure reads whose answer only changes when the project changes. Cycling through them (costume 0, 1, 2, then 0 again)
+// never repeats the previous call, so count identical calls across the turn and reset the count on any other tool.
+const STATIC_READS = new Set<string>(["get_project", "get_scripts", "get_variables", "get_assets", "get_procedures", "get_comments", "get_costume_image", "search_library", "list_files", "list_snapshots"]);
+const STATIC_READ_LIMIT = 2;
+const IMAGE_REREAD = "Bạn đã xem ảnh này rồi mà project chưa đổi. Ngữ cảnh chỉ giữ vài ảnh gần nhất nên đừng gom nhiều ảnh rồi mới quyết định. Với mỗi ảnh, hành động NGAY theo yêu cầu (ví dụ manage_asset rename cho costume này), rồi mới xem ảnh kế tiếp. Dùng get_assets để xem tên hiện tại; costume nào đã đổi tên thì bỏ qua.";
+// Same arguments in a different key order are the same call.
+function canonicalArgs(raw: string) {
+  const sorted = (value: unknown): unknown => Array.isArray(value) ? value.map(sorted)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : 1).map(([k, v]) => [k, sorted(v)])) : value;
+  try { return JSON.stringify(sorted(JSON.parse(raw))); } catch { return raw; }
+}
 export async function runAgent(options: {
   editor: EditorHandle; history: ChatMessage[]; prompt: UserContent; signal: AbortSignal;
   onHistory(messages: ChatMessage[]): void;
@@ -125,6 +136,7 @@ export async function runAgent(options: {
   let messages: ChatMessage[] = [...trimHistory(options.history), prompt];
   options.onHistory([...messages]);
   let lastCall = "", repeats = 0, blocked = 0;
+  const reads = new Map<string, number>();
   const usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   for (let step = 1; ; step++) {
     signal.throwIfAborted();
@@ -180,6 +192,14 @@ export async function runAgent(options: {
           if (++blocked >= BLOCKED_LIMIT) throw Object.assign(new Error("AI lặp lại cùng một thao tác nhiều lần nên đã được dừng để tránh vòng lặp vô hạn. Thay đổi đã làm được giữ lại."), { fatal: true });
           throw new Error(`Bạn đã gọi ${name} với cùng tham số ${repeats} lần liên tiếp mà không tiến triển. Hãy đổi cách làm, đọc lại trạng thái, hoặc kết thúc và báo cho người dùng.`);
         }
+        if (STATIC_READS.has(name)) {
+          const key = `${name}:${canonicalArgs(call.function.arguments)}`, seen = (reads.get(key) ?? 0) + 1;
+          reads.set(key, seen);
+          if (seen > STATIC_READ_LIMIT) {
+            if (++blocked >= BLOCKED_LIMIT) throw Object.assign(new Error("AI lặp lại việc đọc cùng một dữ liệu nhiều lần nên đã được dừng để tránh vòng lặp vô hạn. Thay đổi đã làm được giữ lại."), { fatal: true });
+            throw new Error(name === "get_costume_image" ? IMAGE_REREAD : `Bạn đã gọi ${name} với cùng tham số ${seen - 1} lần mà project chưa đổi. Dùng kết quả đã có hoặc làm bước tiếp theo.`);
+          }
+        } else reads.clear();
         blocked = 0;
         const args = parseTool(name, JSON.parse(call.function.arguments)) as Record<string, unknown>;
         // Plan/explain modes are advisory: only reading tools may run.
