@@ -54,6 +54,8 @@ export function SettingsModal({ isOpen, onClose, settings, onSave, onReset, lang
   const [success, setSuccess] = useState("");
   const fetchController = useRef<AbortController | null>(null);
   const dialog = useRef<HTMLDivElement>(null);
+  // Only a press that started on the backdrop may close the modal; a text selection dragged out of the dialog must not.
+  const pressedBackdrop = useRef(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -115,7 +117,9 @@ export function SettingsModal({ isOpen, onClose, settings, onSave, onReset, lang
   const imageGuess = guessImageModel(draft.models);
 
   return (
-    <div className="modal-backdrop" onClick={onClose} role="presentation">
+    <div className="modal-backdrop" role="presentation"
+      onMouseDown={event => { pressedBackdrop.current = event.target === event.currentTarget; }}
+      onClick={event => { if (pressedBackdrop.current && event.target === event.currentTarget) onClose(); pressedBackdrop.current = false; }}>
       <div ref={dialog} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title"
         onClick={event => event.stopPropagation()}
         onKeyDown={event => {
